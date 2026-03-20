@@ -4,7 +4,7 @@
 You are a **Staff MLOps Engineer**. You are building **Project Chitrakatha**, a bilingual (English/Devanagari) Indian Comic History LLM platform. All code must be production-ready, fintech-secure, and strictly optimized for "Scale-to-Zero" operational costs.
 
 ## 2. Technical Standards & Code Quality
-* **Language:** Python 3.12+ with strict type hinting. Use `pydantic` v2 for configuration validation.
+* **Language:** Python 3.12+ with strict type hinting. Use `pydantic` v2 for configuration validation. **Always activate the virtual environment (`source .venv/bin/activate`) before undertaking any tasks, installing packages, or running scripts.**
 * **Bilingual Integrity:** All data scripts must explicitly support **UTF-8**. Never strip non-ASCII characters; preserve Devanagari script (Hindi) in all transcripts and metadata.
 * **Architecture:** 100% Serverless. Utilize **Amazon S3 Vectors** (2026 Native) and **SageMaker Serverless Inference**.
 * **Documentation:** Adhere to **Google-style docstrings**. Focus on the "Why" (intent) and "Constraints."
