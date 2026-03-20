@@ -1,0 +1,486 @@
+# Project Chitrakatha — Detailed Implementation Plan
+
+> **Persona:** Staff MLOps Engineer  
+> **Goal:** A production-grade, 100% Serverless, bilingual (English/Devanagari) Indian Comic History LLM platform on AWS using S3 Vectors, Bedrock, and SageMaker — with a "Scale-to-Zero" cost model (~$5/mo baseline).
+
+---
+
+## Quick Reference: Guiding Constraints
+
+| Constraint | Rule |
+|---|---|
+| Language | Python 3.12+, strict type hints, pydantic v2 |
+| Encoding | UTF-8 everywhere; never strip Devanagari |
+| Compute | 100% Serverless (no EC2 / EKS / persistent DB) |
+| Secrets | AWS Secrets Manager only — no hardcoding |
+| IaC | Terraform (primary) — outputs drive all runtime config |
+| Encryption | AWS-KMS CMKs on every S3 bucket |
+| IAM | Least-privilege, resource-scoped policies |
+| Training | Managed Spot Training, checkpointing mandatory |
+| Tagging | `Project: Chitrakatha`, `CostCenter: MLOps-Research` on every resource |
+| Chunking | Sliding window, 15% overlap for narrative continuity |
+| Versioning | S3 bucket versioning enabled on all data buckets |
+
+---
+
+## Phase 0 — Repository Scaffold & Governance
+
+**Goal:** Establish the project skeleton, Python toolchain, and pre-commit quality gates before writing any domain code.
+
+### Files to Create
+
+#### `pyproject.toml` [NEW]
+- Python 3.12 project config
+- Dependencies: `boto3`, `sagemaker`, `pydantic>=2`, `transformers`, `peft`, `trl`, `datasets`, `bitsandbytes`, `yt-dlp`, `openpyxl`, `pytest`, `ruff`, `mypy`
+- Dev deps: `moto[s3,bedrock,secretsmanager]`, `pytest-cov`
+
+#### `.python-version` [NEW]
+- Pin to `3.12`
+
+#### `.pre-commit-config.yaml` [NEW]
+- Hooks: `ruff` (lint + format), `mypy` (type check), `detect-secrets`, `terraform fmt`
+
+#### `Makefile` [NEW]
+- Targets: `install`, `lint`, `test`, `tf-plan`, `tf-apply`, `pipeline-run`
+
+#### `src/chitrakatha/__init__.py` [NEW]
+- Package init; exposes `__version__`
+
+#### `src/chitrakatha/config.py` [NEW]
+- Pydantic v2 `BaseSettings` model: reads `AWS_REGION`, `S3_BUCKET_PREFIX`, `KMS_KEY_ARN`, `SAGEMAKER_ROLE_ARN`, `BEDROCK_KB_ID` from environment / SSM
+- No hardcoded values
+
+#### `src/chitrakatha/exceptions.py` [NEW]
+- Custom exception hierarchy:
+  - `ChitrakathaBaseError`
+  - `SageMakerPipelineError(ChitrakathaBaseError)`
+  - `BedrockEmbeddingError(ChitrakathaBaseError)`
+  - `S3VectorError(ChitrakathaBaseError)`
+  - `DataIngestionError(ChitrakathaBaseError)`
+
+#### `README.md` [NEW]
+- Architecture diagram (ASCII), quick-start, cost breakdown
+
+#### `tests/__init__.py`, `tests/unit/__init__.py`, `tests/integration/__init__.py` [NEW]
+- Empty init files
+
+---
+
+## Phase 1 — Infrastructure-as-Code (Terraform)
+
+**Goal:** Provision all AWS primitives. Every downstream Python script derives config from Terraform outputs — no hardcoded ARNs.
+
+### Directory: `infra/terraform/`
+
+#### `infra/terraform/main.tf` [NEW]
+- Provider: `aws` pinned to `~> 5.x`
+- Terraform backend: S3 state bucket + DynamoDB lock table (bootstrap script)
+
+#### `infra/terraform/variables.tf` [NEW]
+- `aws_region`, `project_name` (default: `chitrakatha`), `environment` (default: `dev`)
+
+#### `infra/terraform/kms.tf` [NEW]
+- **Customer Managed Key** for all S3 buckets
+- Key policy: least-privilege (SageMaker role, Bedrock service principal)
+- Tags: `Project: Chitrakatha`, `CostCenter: MLOps-Research`
+
+#### `infra/terraform/s3.tf` [NEW]
+Provisions **4 S3 buckets** with versioning + KMS + lifecycle:
+1. `chitrakatha-bronze-{account_id}` — raw ingest (articles, transcripts, Excel)
+2. `chitrakatha-silver-{account_id}` — cleaned JSONL
+3. `chitrakatha-gold-{account_id}` — training-ready datasets + model artifacts
+4. `chitrakatha-vectors-{account_id}` — **S3 Vectors** bucket (special `--enable-s3-vectors` flag)
+
+#### `infra/terraform/s3_vectors.tf` [NEW]
+- **S3 Vector Index** resource (2026 native API via `aws_s3_vectors_index`)
+- Dimension: `1536` (Titan Embed v2 output size)
+- Metric: `cosine`
+- Links to vectors bucket + KMS key
+
+#### `infra/terraform/iam.tf` [NEW]
+- **SageMaker Execution Role** with least-privilege inline policies:
+  - S3: `GetObject`, `PutObject`, `ListBucket` scoped to the 4 named buckets only
+  - Bedrock: `InvokeModel` on Titan Embed v2 ARN only
+  - SageMaker: `CreateProcessingJob`, `CreateTrainingJob`, `CreateModel`, `CreateEndpointConfig`, `CreateEndpoint`
+  - KMS: `GenerateDataKey`, `Decrypt` scoped to CMK ARN
+  - Secrets Manager: `GetSecretValue` scoped to `chitrakatha/*`
+  - CloudWatch Logs: `CreateLogGroup`, `PutLogEvents`
+
+#### `infra/terraform/secrets.tf` [NEW]
+- AWS Secrets Manager secret: `chitrakatha/synthetic_data_api_key`
+- Placeholder value — real value injected via CI/CD
+
+#### `infra/terraform/outputs.tf` [NEW]
+- Exports: `sagemaker_role_arn`, `kms_key_arn`, `s3_bronze_bucket`, `s3_silver_bucket`, `s3_gold_bucket`, `s3_vectors_bucket`, `s3_vector_index_arn`, `secret_arn`
+
+#### `infra/terraform/cloudwatch.tf` [NEW]
+- CloudWatch Alarms:
+  - Serverless endpoint `ModelInvocationErrors` > 5 in 5 min → SNS alert
+  - Serverless endpoint cold-start latency P99 > 30s → SNS alert
+  - 4xx/5xx error rate > 1% → SNS alert
+
+---
+
+## Phase 2 — Data Layer & Ingestion Pipeline
+
+**Goal:** Accept raw source material only — the pipeline handles everything else. Two parallel flows serve different purposes: **Flow A** builds the RAG knowledge base; **Flow B** auto-generates fine-tuning training pairs from that same corpus via Claude.
+
+> [!NOTE]
+> **You never write Q&A pairs manually.** You drop raw data in. Claude reads each chunk and synthesises bilingual training examples automatically.
+
+### Data Sources (what you provide)
+
+| Source type | Format | Drop location |
+|---|---|---|
+| Comic wiki / blog articles | `.txt`, `.md` | `s3://chitrakatha-bronze/articles/` |
+| YouTube transcripts | `.vtt`, `.txt` | `s3://chitrakatha-bronze/transcripts/` |
+| Excel metadata sheets | `.xlsx` | `s3://chitrakatha-bronze/metadata/` |
+| Scanned comic synopsis | `.txt` (UTF-8) | `s3://chitrakatha-bronze/synopsis/` |
+
+### Sub-phase 2a: Raw Ingestion → S3 Bronze
+
+#### `data/scripts/upload_to_bronze.py` [NEW]
+- Generic S3 upload utility for all raw source types above
+- Validates UTF-8 encoding before upload; preserves Devanagari
+- Computes MD5 checksum stored in S3 object metadata for lineage
+- Supported parsers: plain text, `.vtt` (strips timestamps), `.xlsx` (via `openpyxl`)
+
+### Sub-phase 2b: Preprocessing & Dual-Flow Split
+
+After raw data lands in Bronze, **one preprocessing job** produces two outputs:
+
+```
+S3 Bronze (raw)
+      │
+  preprocessing.py
+      │
+      ├──► S3 Silver /corpus/     ← Flow A: clean chunks for RAG
+      └──► S3 Silver /training/   ← Flow B: input for Q&A synthesis
+```
+
+### Sub-phase 2c: Flow A — Corpus → S3 Vectors (RAG knowledge base)
+
+#### `src/chitrakatha/ingestion/chunker.py` [NEW]
+- **Sliding-window chunker** with 15% overlap
+- Configurable `chunk_size` (default: 512 tokens) and `overlap_ratio` (default: 0.15)
+- Preserves Devanagari; never strips non-ASCII
+- Returns `list[Chunk]` where `Chunk` is a pydantic v2 model
+
+#### `src/chitrakatha/ingestion/embedder.py` [NEW]
+- Wraps Bedrock `amazon.titan-embed-text-v2:0`
+- Batch-embeds chunks (max 25 per API call to stay within limits)
+- Raises `BedrockEmbeddingError` on failure
+- Returns `list[float]` (1536-dim vectors)
+
+#### `src/chitrakatha/ingestion/vector_writer.py` [NEW]
+- Writes `(vector_id, embedding, metadata)` tuples to **S3 Vectors** via boto3
+- Metadata payload: `{"source_entity": ..., "publisher": ..., "language": ..., "chunk_text": ...}`
+- Raises `S3VectorError` on failure
+
+#### `data/scripts/ingest_to_vectors.py` [NEW]
+- Orchestration: reads `/corpus/` chunks from Silver → chunk → embed → write to S3 Vectors
+- Idempotent: checks for existing vector IDs before re-inserting
+- Runs as a **SageMaker Processing Job** (see Phase 3)
+
+### Sub-phase 2d: Flow B — Corpus → Synthetic Q&A → Fine-tuning Data
+
+#### `data/scripts/synthesize_training_pairs.py` [NEW]
+- Reads clean corpus chunks from `S3 Silver /training/`
+- For each chunk, calls **Bedrock Claude** (`anthropic.claude-3-5-sonnet-20241022-v2:0`) with a prompt:
+  > *"Given this passage about Indian comics, generate 3 bilingual Q&A pairs (English + Devanagari Hindi). Ground every answer strictly in the passage."*
+- Output schema per record:
+  ```json
+  {
+    "id": "uuid4",
+    "question_en": "...",
+    "question_hi": "... (Devanagari)",
+    "answer_en": "...",
+    "answer_hi": "... (Devanagari)",
+    "source_chunk_id": "...",
+    "source_entity": "Nagraj",
+    "publisher": "Raj Comics",
+    "language_pair": "en-hi"
+  }
+  ```
+- Output: JSONL to `S3 Gold /training-pairs/` (grows with every corpus update)
+- Raises `BedrockEmbeddingError` on API failure; retries with exponential backoff
+- Runs as a **SageMaker Processing Job** after embedding step
+
+---
+
+## Phase 3 — SageMaker MLOps Pipeline (The Core DAG)
+
+**Goal:** Build the automated `Process → Embed → Train → Evaluate → Register` pipeline.
+
+### Sub-phase 3a: Processing Step
+
+#### `pipeline/steps/preprocessing.py` [NEW]
+- SageMaker Processing script (runs in `SKLearnProcessor`)
+- Input: raw source files from S3 Bronze (articles, transcripts, Excel, synopsis)
+- Operations:
+  1. Parse source type (`.vtt` → strip timestamps, `.xlsx` → flatten rows, `.txt` → passthrough)
+  2. Normalize Unicode (NFC form, **preserve Devanagari** — never strip non-ASCII)
+  3. De-duplicate by content hash
+  4. Language-tag each document (`en`, `hi`, or `en-hi` bilingual)
+  5. Split into two output prefixes:
+     - `S3 Silver /corpus/` — clean full-text for RAG embedding (Flow A)
+     - `S3 Silver /training/` — clean chunks as synthesis input (Flow B)
+- Raises `DataIngestionError` on unreadable or completely empty documents
+
+### Sub-phase 3b: Embedding Step (Flow A)
+
+#### `pipeline/steps/embed_and_index.py` [NEW]
+- SageMaker Processing script
+- Reads `S3 Silver /corpus/` → chunk → embed → write to S3 Vectors
+- Calls `ingest_to_vectors.py` logic (idempotent)
+- Logs vector count to SageMaker Experiments
+
+### Sub-phase 3b-ii: Training Pair Synthesis Step (Flow B)
+
+#### `pipeline/steps/synthesize_pairs.py` [NEW]
+- SageMaker Processing script wrapping `synthesize_training_pairs.py`
+- Reads `S3 Silver /training/` corpus chunks
+- Claude generates 3 bilingual Q&A pairs per chunk
+- Outputs to `S3 Gold /training-pairs/`
+- Logs pair count and Bedrock token usage to SageMaker Experiments
+- **Runs in parallel with `embed_and_index.py`** (no dependency between Flow A and Flow B)
+
+### Sub-phase 3c: Fine-tuning Step
+
+#### `pipeline/steps/train.py` [NEW]
+- **QLoRA fine-tuning** using `trl.SFTTrainer` + `peft`
+- Base model: `meta-llama/Meta-Llama-3.1-8B-Instruct` (or Mistral-7B as fallback)
+- LoRA config: `r=16`, `lora_alpha=32`, `target_modules=["q_proj","v_proj"]`, `lora_dropout=0.05`
+- Quantization: 4-bit `BitsAndBytesConfig` (NF4)
+- **Managed Spot Training**: `train_use_spot_instances=True`, `max_wait=86400`
+- Checkpointing to S3 Gold (`/checkpoints/`)
+- Logs hyperparameters + eval metrics to **SageMaker Experiments** run
+- Evaluation: ROUGE-L score on held-out 10% of seed data
+
+#### `pipeline/steps/evaluate.py` [NEW]
+- Standalone evaluation script
+- Cross-lingual retrieval test: English query → must match Devanagari ground truth answer
+- Computes: ROUGE-L, BERTScore (multilingual), exact-match@1
+- Emits metrics to SageMaker Experiments
+- Returns `{"status": "pass"/"fail", "rouge_l": float}`
+
+### Sub-phase 3d: Pipeline DAG
+
+#### `pipeline/pipeline.py` [NEW]
+- `sagemaker.workflow.pipeline.Pipeline` definition
+- Steps in order:
+  1. `ProcessingStep` — runs `preprocessing.py` via `SKLearnProcessor` (splits Bronze → Silver corpus + training)
+  2. `ProcessingStep` — runs `embed_and_index.py` (Flow A: corpus → S3 Vectors) ┐ run in parallel
+  3. `ProcessingStep` — runs `synthesize_pairs.py` (Flow B: chunks → Claude → Gold Q&A) ┘
+  4. `TrainingStep` — runs `train.py` via `HuggingFace` estimator (g5.2xlarge Spot) — reads from Gold Q&A
+  5. `ProcessingStep` — runs `evaluate.py`
+  6. `ConditionStep` — if ROUGE-L ≥ 0.35 → proceed to registration
+  7. `ModelStep` — creates SageMaker Model artifact
+  8. `RegisterModel` — registers to Model Registry (approval status: `PendingManualApproval`)
+- Pipeline parameters: `InputDataUri`, `ModelApprovalStatus`, `BaseModelId`
+- Tags: `Project: Chitrakatha`, `CostCenter: MLOps-Research`
+
+#### `pipeline/requirements.txt` [NEW]
+- Dependencies for training container: `transformers`, `peft`, `trl`, `datasets`, `bitsandbytes`, `rouge-score`, `bert-score`, `evaluate`
+
+---
+
+## Phase 4 — Serving: Serverless Inference + Lambda Bridge
+
+**Goal:** Deploy the fine-tuned model behind a zero-cost-when-idle serverless endpoint, with a Lambda function providing the RAG query interface.
+
+### Sub-phase 4a: Serverless Endpoint
+
+#### `serving/deploy_endpoint.py` [NEW]
+- Reads approved model from SageMaker Model Registry
+- Deploys via `ServerlessInferenceConfig`:
+  - `MemorySizeInMB=6144`
+  - `MaxConcurrency=5`
+- Endpoint name: `chitrakatha-rag-serverless`
+- Custom **Container Environment**: injects `BEDROCK_KB_ID`, `S3_VECTOR_INDEX_ARN`
+
+#### `serving/inference.py` [NEW]
+- Model server entry point (`model_fn`, `predict_fn`)
+- RAG flow inside `predict_fn`:
+  1. Embed query using Bedrock Titan v2
+  2. Similarity search against S3 Vectors index (top-k=5)
+  3. Build prompt: `[Context from retrieved chunks] + [User Query]`
+  4. Generate response via the fine-tuned Llama model
+- Raises `SageMakerPipelineError` on empty context retrieval
+
+### Sub-phase 4b: Lambda Bridge
+
+#### `serving/lambda/handler.py` [NEW]
+- Python 3.12 Lambda function
+- API Gateway → Lambda → SageMaker Serverless endpoint
+- Input validation via pydantic v2 (`QueryRequest` model)
+- Returns `{"answer": str, "sources": list[str], "language": "en"|"hi"}`
+- Language detection: if query contains Devanagari chars → respond in Hindi
+- Cold-start optimization: reuse boto3 client at module level
+- CloudWatch structured logging (JSON)
+
+#### `serving/lambda/requirements.txt` [NEW]
+- `boto3`, `pydantic>=2`
+
+#### `infra/terraform/lambda.tf` [NEW]
+- Lambda function resource with IAM role (invoke SageMaker endpoint only)
+- API Gateway HTTP API trigger
+- Environment vars from Terraform outputs (no hardcoding)
+
+---
+
+## Phase 5 — Observability, Lineage & MLOps Governance
+
+**Goal:** Full experiment tracking, data-to-model lineage, and CloudWatch dashboards.
+
+#### `src/chitrakatha/monitoring/lineage.py` [NEW]
+- Wraps `sagemaker.lineage` APIs
+- Records: `DataSet → ProcessingJob → TrainingJob → Model → Endpoint` lineage chain
+- Called from pipeline steps post-execution
+
+#### `src/chitrakatha/monitoring/experiments.py` [NEW]
+- Helper to log to **SageMaker Experiments**
+- Logs: `base_model`, `lora_r`, `lora_alpha`, `learning_rate`, `epochs`, `rouge_l`, `bert_score`
+
+#### `infra/terraform/cloudwatch.tf` (additions)
+- CloudWatch Dashboard: `ChitrakathaMLOpsDashboard`
+  - Widgets: endpoint invocations, error rate, cold-start P99, training job status
+
+---
+
+## Phase 6 — CI/CD (GitHub Actions)
+
+**Goal:** Automated quality gates and pipeline triggering on every PR and merge to `main`.
+
+#### `.github/workflows/ci.yml` [NEW]
+- Triggers: `push` to `main`, `pull_request`
+- Jobs:
+  1. **lint-and-type-check**: `ruff check`, `ruff format --check`, `mypy src/`
+  2. **unit-tests**: `pytest tests/unit/ -v --cov=src/chitrakatha --cov-fail-under=80`
+  3. **terraform-lint**: `terraform fmt -check`, `terraform validate`
+  4. **terraform-plan**: on PR only, posts plan output as PR comment
+
+#### `.github/workflows/ct.yml` [NEW]
+- Triggers: merge to `main` + manual `workflow_dispatch`
+- Job: **trigger-sagemaker-pipeline**
+  - Assumes OIDC role (no long-lived keys)
+  - Calls `pipeline/pipeline.py --execute`
+  - Posts pipeline ARN to Slack/GitHub summary
+
+#### `.github/workflows/deploy.yml` [NEW]
+- Triggers: SageMaker Model Registry approval webhook (via EventBridge → Lambda → GitHub Actions API)
+- Job: **deploy-endpoint** — runs `serving/deploy_endpoint.py`
+
+---
+
+## Proposed Repository Layout
+
+```
+sagemaker-project-chitrakatha/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       ├── ct.yml
+│       └── deploy.yml
+├── .pre-commit-config.yaml
+├── AGENTS.md
+├── Makefile
+├── README.md
+├── pyproject.toml
+├── .python-version
+│
+├── infra/
+│   └── terraform/
+│       ├── main.tf
+│       ├── variables.tf
+│       ├── kms.tf
+│       ├── s3.tf
+│       ├── s3_vectors.tf
+│       ├── iam.tf
+│       ├── secrets.tf
+│       ├── cloudwatch.tf
+│       ├── lambda.tf
+│       └── outputs.tf
+│
+├── src/
+│   └── chitrakatha/
+│       ├── __init__.py
+│       ├── config.py              # Pydantic v2 settings
+│       ├── exceptions.py          # Custom exception hierarchy
+│       ├── ingestion/
+│       │   ├── chunker.py         # Sliding-window chunker (15% overlap)
+│       │   ├── embedder.py        # Bedrock Titan Embed v2 wrapper
+│       │   └── vector_writer.py   # S3 Vectors writer
+│       └── monitoring/
+│           ├── lineage.py         # SageMaker Lineage API helpers
+│           └── experiments.py     # SageMaker Experiments logger
+│
+├── pipeline/
+│   ├── pipeline.py                # SageMaker Pipeline DAG
+│   ├── requirements.txt
+│   └── steps/
+│       ├── preprocessing.py       # Step 1: Bronze → Silver (corpus + training split)
+│       ├── embed_and_index.py     # Step 2a: Flow A — corpus → S3 Vectors
+│       ├── synthesize_pairs.py    # Step 2b: Flow B — chunks → Claude → Gold Q&A
+│       ├── train.py               # Step 3: QLoRA fine-tune on Gold Q&A
+│       └── evaluate.py            # Step 4: ROUGE-L, BERTScore, cross-lingual
+│
+├── serving/
+│   ├── deploy_endpoint.py         # Serverless endpoint deploy script
+│   ├── inference.py               # Model server (RAG predict_fn)
+│   └── lambda/
+│       ├── handler.py             # Lambda bridge (API GW → SageMaker)
+│       └── requirements.txt
+│
+├── data/
+│   └── scripts/
+│       ├── upload_to_bronze.py          # Drop raw data → S3 Bronze
+│       ├── ingest_to_vectors.py          # Flow A: Silver corpus → S3 Vectors
+│       └── synthesize_training_pairs.py  # Flow B: Silver chunks → Claude → Gold Q&A
+│
+└── tests/
+    ├── unit/
+    │   ├── test_chunker.py        # Sliding window logic, Devanagari preservation
+    │   ├── test_embedder.py       # Mocked Bedrock calls (moto)
+    │   ├── test_preprocessor.py   # Unicode normalization, dedup
+    │   ├── test_vector_writer.py  # Mocked S3 Vectors (moto)
+    │   └── test_lambda_handler.py # Pydantic validation, language detection
+    └── integration/
+        └── test_pipeline_dag.py   # Validates pipeline step definitions (no AWS calls)
+```
+
+---
+
+## Phase Execution Order & Dependencies
+
+```mermaid
+graph LR
+    P0[Phase 0\nRepo Scaffold] --> P1[Phase 1\nTerraform IaC]
+    P1 --> P2[Phase 2\nData & Ingestion]
+    P2 --> P3[Phase 3\nSageMaker Pipeline]
+    P3 --> P4[Phase 4\nServing & Lambda]
+    P4 --> P5[Phase 5\nObservability]
+    P0 --> P6[Phase 6\nCI/CD]
+    P5 --> P6
+```
+
+> **Note:** Phase 6 (CI/CD) can be scaffolded in parallel with Phase 1, but the `ct.yml` trigger workflow requires the pipeline to exist (Phase 3).
+
+---
+
+## Key Decisions & Open Questions
+
+> [!IMPORTANT]
+> **Before execution begins, please confirm the following decisions:**
+
+| # | Decision | Options | Recommendation |
+|---|---|---|---|
+| 1 | **Base LLM** | `meta-llama/Meta-Llama-3.1-8B-Instruct` vs `mistralai/Mistral-7B-Instruct-v0.3` | Llama 3.1 8B (better multilingual) |
+| 2 | **Training instance** | `ml.g5.2xlarge` (24GB VRAM, ~$1.215/hr Spot) vs `ml.g5.4xlarge` | g5.2xlarge (sufficient for QLoRA 4-bit) |
+| 3 | **Q&A pairs per chunk** | 3 pairs per chunk (default) vs 5 pairs | 3 keeps Bedrock cost low while scaling with corpus size |
+| 4 | **IaC tool** | Terraform (primary req.) vs AWS CDK | Terraform (per project-requirement.md) |
+| 5 | **Frontend** | Scope limited to Lambda API only, or include a lightweight UI? | Lambda API only for this plan |
+| 6 | **RAG Strategy** | Managed Bedrock KB owning the vector index vs. direct S3 Vectors queries via boto3 in `inference.py` | Clarification needed — AGENTS.md mentions both |
+
+> [!WARNING]
+> **S3 Vectors (2026 API) Note:** The `aws_s3_vectors_index` Terraform resource is a 2026 addition. Ensure your `hashicorp/aws` provider is pinned to `>= 5.90` (or latest 2026 release) that includes this resource. If it's not yet in the provider, we will use a `null_resource` with AWS CLI bootstrap script as a fallback.
