@@ -182,20 +182,27 @@ S3 Bronze (raw)
 - Idempotent: checks for existing vector IDs before re-inserting
 - Runs as a **SageMaker Processing Job** (see Phase 3)
 
-### Sub-phase 2d: Flow B — Corpus → Synthetic Q&A → Fine-tuning Data
+### Sub-phase 2d: Flow B — Corpus → RAFT Training Data → Fine-tuning
+
+> **Technique: RAFT (Retrieval-Augmented Fine-Tuning)**  
+> The model is trained not just on Q&A facts, but on examples that include a golden document *and* distractor documents. This teaches the model the skill of reading retrieved context and ignoring irrelevant chunks — exactly what it must do at inference time against live S3 Vector results.
 
 #### `data/scripts/synthesize_training_pairs.py` [NEW]
 - Reads clean corpus chunks from `S3 Silver /training/`
-- For each chunk, calls **Bedrock Claude** (`anthropic.claude-3-5-sonnet-20241022-v2:0`) with a prompt:
-  > *"Given this passage about Indian comics, generate 3 bilingual Q&A pairs (English + Devanagari Hindi). Ground every answer strictly in the passage."*
+- For each **golden chunk**, randomly samples 2 **distractor chunks** from the same Silver corpus (different entity/publisher)
+- Calls **Bedrock Claude** (`anthropic.claude-3-5-sonnet-20241022-v2:0`) with a RAFT prompt:
+  > *"You are given a golden document and 2 distractor documents about Indian comics. Generate 3 bilingual Q&A pairs (English + Devanagari Hindi). For each pair, include a chain-of-thought that explicitly identifies which document contains the answer and why the distractors are irrelevant. Ground every answer strictly in the golden document only."*
 - Output schema per record:
   ```json
   {
     "id": "uuid4",
     "question_en": "...",
     "question_hi": "... (Devanagari)",
-    "answer_en": "...",
-    "answer_hi": "... (Devanagari)",
+    "golden_chunk": "... (the source passage)",
+    "distractor_chunks": ["...", "..."],
+    "chain_of_thought": "The question asks about X. Document 1 mentions X explicitly. Documents 2 and 3 are about different characters and are not relevant...",
+    "answer_en": "... (grounded in golden_chunk only)",
+    "answer_hi": "... (Devanagari, grounded in golden_chunk only)",
     "source_chunk_id": "...",
     "source_entity": "Nagraj",
     "publisher": "Raj Comics",
@@ -205,6 +212,8 @@ S3 Bronze (raw)
 - Output: JSONL to `S3 Gold /training-pairs/` (grows with every corpus update)
 - Raises `BedrockEmbeddingError` on API failure; retries with exponential backoff
 - Runs as a **SageMaker Processing Job** after embedding step
+
+> **Cost note:** RAFT examples are ~3–4× larger than plain Q&A pairs (include golden + 2 distractor chunks). Expect ~$3–9/run Bedrock synthesis cost vs ~$1–3 for plain SFT.
 
 ---
 
@@ -248,21 +257,37 @@ S3 Bronze (raw)
 ### Sub-phase 3c: Fine-tuning Step
 
 #### `pipeline/steps/train.py` [NEW]
-- **QLoRA fine-tuning** using `trl.SFTTrainer` + `peft`
+- **QLoRA fine-tuning** using `trl.SFTTrainer` + `peft` with **RAFT prompt template**
 - Base model: `meta-llama/Meta-Llama-3.1-8B-Instruct` (or Mistral-7B as fallback)
 - LoRA config: `r=16`, `lora_alpha=32`, `target_modules=["q_proj","v_proj"]`, `lora_dropout=0.05`
 - Quantization: 4-bit `BitsAndBytesConfig` (NF4)
+- **RAFT prompt template** applied to every training example:
+  ```
+  You are given the following documents:
+  [Document 1 - may or may not be relevant]: {distractor_1}
+  [Document 2 - may or may not be relevant]: {golden_chunk}
+  [Document 3 - may or may not be relevant]: {distractor_2}
+
+  Question: {question}
+
+  Think step by step, then answer using ONLY the relevant document above.
+  {chain_of_thought}
+  Answer: {answer}
+  ```
+  > Documents are shuffled randomly so the model cannot learn positional shortcuts.
 - **Managed Spot Training**: `train_use_spot_instances=True`, `max_wait=86400`
 - Checkpointing to S3 Gold (`/checkpoints/`)
 - Logs hyperparameters + eval metrics to **SageMaker Experiments** run
-- Evaluation: ROUGE-L score on held-out 10% of seed data
+- Evaluation: ROUGE-L score on held-out 10% of Gold data
 
 #### `pipeline/steps/evaluate.py` [NEW]
-- Standalone evaluation script
-- Cross-lingual retrieval test: English query → must match Devanagari ground truth answer
-- Computes: ROUGE-L, BERTScore (multilingual), exact-match@1
-- Emits metrics to SageMaker Experiments
-- Returns `{"status": "pass"/"fail", "rouge_l": float}`
+- Standalone evaluation script with **three test suites**:
+  1. **Factual accuracy**: ROUGE-L, BERTScore (multilingual), exact-match@1 on held-out Q&A pairs
+  2. **Cross-lingual retrieval**: English query → must match Devanagari ground truth answer
+  3. **Distractor robustness** *(RAFT-specific)*: Model is given 1 golden + 4 distractor chunks; must still produce the correct answer — tests that the RAFT training generalised
+- Emits all metrics to SageMaker Experiments
+- Returns `{"status": "pass"/"fail", "rouge_l": float, "distractor_robustness": float}`
+- Pass threshold: ROUGE-L ≥ 0.35 **AND** distractor_robustness ≥ 0.70
 
 ### Sub-phase 3d: Pipeline DAG
 
@@ -274,14 +299,15 @@ S3 Bronze (raw)
   3. `ProcessingStep` — runs `synthesize_pairs.py` (Flow B: chunks → Claude → Gold Q&A) ┘
   4. `TrainingStep` — runs `train.py` via `HuggingFace` estimator (g5.2xlarge Spot) — reads from Gold Q&A
   5. `ProcessingStep` — runs `evaluate.py`
-  6. `ConditionStep` — if ROUGE-L ≥ 0.35 → proceed to registration
+  6. `ConditionStep` — if ROUGE-L ≥ 0.35 **AND** distractor_robustness ≥ 0.70 → proceed to registration
   7. `ModelStep` — creates SageMaker Model artifact
   8. `RegisterModel` — registers to Model Registry (approval status: `PendingManualApproval`)
 - Pipeline parameters: `InputDataUri`, `ModelApprovalStatus`, `BaseModelId`
 - Tags: `Project: Chitrakatha`, `CostCenter: MLOps-Research`
 
 #### `pipeline/requirements.txt` [NEW]
-- Dependencies for training container: `transformers`, `peft`, `trl`, `datasets`, `bitsandbytes`, `rouge-score`, `bert-score`, `evaluate`
+- Dependencies for training container: `transformers`, `peft`, `trl`, `datasets`, `bitsandbytes`, `rouge-score`, `bert-score`, `evaluate`, `sentencepiece`
+  > `sentencepiece` required for multilingual BERTScore tokenisation across English and Devanagari.
 
 ---
 
