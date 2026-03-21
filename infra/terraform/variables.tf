@@ -20,8 +20,8 @@ variable "project_name" {
     Short name used as a prefix for all resource identifiers (S3 buckets,
     IAM roles, KMS aliases, etc.). Must be lowercase alphanumeric + hyphens.
   EOT
-  type    = string
-  default = "chitrakatha"
+  type        = string
+  default     = "chitrakatha"
 
   validation {
     condition     = can(regex("^[a-z0-9-]+$", var.project_name))
@@ -45,8 +45,8 @@ variable "kms_deletion_window_days" {
     Number of days before a scheduled KMS key deletion takes effect.
     AWS minimum is 7; use 30 for production to allow recovery.
   EOT
-  type    = number
-  default = 30
+  type        = number
+  default     = 30
 
   validation {
     condition     = var.kms_deletion_window_days >= 7 && var.kms_deletion_window_days <= 30
@@ -59,8 +59,8 @@ variable "alarm_sns_topic_arn" {
     ARN of the SNS topic that receives CloudWatch alarm notifications (cold-start,
     error rate, etc.). Leave empty in dev to suppress alerts.
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 variable "s3_vector_dimension" {
@@ -69,8 +69,8 @@ variable "s3_vector_dimension" {
     Must match the output size of the embedding model.
     Titan Embed Text v2 produces 1536-dimensional vectors.
   EOT
-  type    = number
-  default = 1536
+  type        = number
+  default     = 1536
 }
 
 variable "s3_vector_metric" {
