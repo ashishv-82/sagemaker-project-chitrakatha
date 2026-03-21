@@ -12,7 +12,7 @@
 | **Phase 0** | Repo scaffold & governance | ✅ Complete |
 | **Phase 1** | Terraform IaC | ✅ Complete |
 | **Phase 2** | Data layer & ingestion | ✅ Complete |
-| **Phase 3** | SageMaker MLOps pipeline | 🔲 Not started |
+| **Phase 3** | SageMaker MLOps pipeline | ✅ Complete |
 | **Phase 4** | Serving & Lambda bridge | 🔲 Not started |
 | **Phase 5** | Observability & lineage | 🔲 Not started |
 | **Phase 6** | CI/CD (GitHub Actions) | 🔲 Not started |
@@ -71,17 +71,18 @@
 
 ---
 
-## Phase 3 — SageMaker MLOps Pipeline 🔲
+## Phase 3 — SageMaker MLOps Pipeline ✅
 
 | File | Status | Notes |
 |---|---|---|
-| `pipeline/steps/preprocessing.py` | 🔲 | Bronze → Silver (corpus + training split) |
-| `pipeline/steps/embed_and_index.py` | 🔲 | Flow A: corpus → S3 Vectors |
-| `pipeline/steps/synthesize_pairs.py` | 🔲 | **RAFT**: chunks → Claude → Gold JSONL (golden + distractors + CoT) |
-| `pipeline/steps/train.py` | 🔲 | QLoRA + **RAFT prompt template** (shuffled docs), Spot, Experiments |
-| `pipeline/steps/evaluate.py` | 🔲 | 3 suites: factual accuracy, cross-lingual, **distractor robustness ≥ 0.70** |
-| `pipeline/pipeline.py` | 🔲 | Full DAG (8 steps), ConditionStep: ROUGE-L ≥ 0.35 **AND** distractor_robustness ≥ 0.70 |
-| `pipeline/requirements.txt` | 🔲 | Training container deps incl. `sentencepiece` (multilingual BERTScore) |
+| `pipeline/steps/__init__.py` | ✅ Done | Package marker |
+| `pipeline/steps/preprocessing.py` | ✅ Done | Bronze→Silver: NFC norm, SHA-256 dedup, language detection, dual output |
+| `pipeline/steps/embed_and_index.py` | ✅ Done | Flow A step: corpus→S3 Vectors; idempotent; logs `vector_count_written` |
+| `pipeline/steps/synthesize_pairs.py` | ✅ Done | Flow B step: RAFT synthesis; logs `raft_pairs_generated` + Bedrock tokens |
+| `pipeline/steps/train.py` | ✅ Done | QLoRA 4-bit NF4; RAFT prompt with document shuffle; Spot training |
+| `pipeline/steps/evaluate.py` | ✅ Done | 3 suites: factual (ROUGE-L+BERTScore+EM), cross-lingual, distractor robustness |
+| `pipeline/pipeline.py` | ✅ Done | 8-step DAG; dual-threshold ConditionStep; Spot training; no hardcoded ARNs |
+| `pipeline/requirements.txt` | ✅ Done | peft, trl, datasets, bitsandbytes, rouge-score, bert-score, sentencepiece |
 
 ---
 

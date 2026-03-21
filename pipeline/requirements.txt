@@ -1,0 +1,30 @@
+# Project Chitrakatha — Training Container Dependencies
+#
+# These packages are installed in the HuggingFace training container
+# (automatically by SageMaker) in addition to the base image's pre-installed
+# torch, transformers, and cuda libraries.
+#
+# Why sentencepiece: Required for multilingual BERTScore tokenisation — the
+#   bert_score library uses it internally when computing scores for non-English
+#   text (Devanagari Hindi in this case).
+#
+# Why rouge-score: HuggingFace evaluate's ROUGE metric uses rouge-score
+#   as its backend.
+
+# Fine-tuning stack
+peft>=0.10.0
+trl>=0.8.6
+datasets>=2.18.0
+bitsandbytes>=0.43.0
+
+# Evaluation metrics
+rouge-score>=0.1.2
+bert-score>=0.3.13
+evaluate>=0.4.1
+
+# Multilingual tokenisation (required by BERTScore for Devanagari)
+sentencepiece>=0.2.0
+
+# Utilities
+accelerate>=0.28.0
+scipy>=1.12.0
