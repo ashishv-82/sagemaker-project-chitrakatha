@@ -14,7 +14,7 @@
 | **Phase 2** | Data layer & ingestion | ✅ Complete |
 | **Phase 3** | SageMaker MLOps pipeline | ✅ Complete |
 | **Phase 4** | Serving & Lambda bridge | ✅ Complete |
-| **Phase 5** | Observability & lineage | 🔲 Not started |
+| **Phase 5** | Observability & lineage | ✅ Complete |
 | **Phase 6** | CI/CD (GitHub Actions) | 🔲 Not started |
 
 ---
@@ -98,13 +98,13 @@
 
 ---
 
-## Phase 5 — Observability & Lineage 🔲
+## Phase 5 — Observability & Lineage ✅
 
 | File | Status | Notes |
 |---|---|---|
-| `src/chitrakatha/monitoring/lineage.py` | 🔲 | SageMaker Lineage chain |
-| `src/chitrakatha/monitoring/experiments.py` | 🔲 | Hyperparams + eval metrics logger |
-| `infra/terraform/cloudwatch.tf` (additions) | 🔲 | Dashboard: invocations, error rate, cold-start |
+| `src/chitrakatha/monitoring/lineage.py` | ✅ Done | SageMaker Lineage chain |
+| `src/chitrakatha/monitoring/experiments.py` | ✅ Done | Hyperparams + eval metrics logger |
+| `infra/terraform/cloudwatch.tf` (additions) | ✅ Done | Dashboard: invocations, error rate, cold-start |
 
 ---
 
