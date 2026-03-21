@@ -86,15 +86,15 @@
 
 ---
 
-## Phase 4 — Serving & Lambda Bridge 🔲
+## Phase 4 — Serving & Lambda Bridge ✅
 
 | File | Status | Notes |
 |---|---|---|
-| `serving/deploy_endpoint.py` | 🔲 | ServerlessInferenceConfig (6144MB, max 5) |
-| `serving/inference.py` | 🔲 | RAG predict_fn: embed → S3 Vectors → Llama |
-| `serving/lambda/handler.py` | 🔲 | Language-aware, pydantic validation |
-| `serving/lambda/requirements.txt` | 🔲 | `boto3`, `pydantic>=2` |
-| `infra/terraform/lambda.tf` | 🔲 | Lambda function + API Gateway HTTP API trigger |
+| `serving/deploy_endpoint.py` | ✅ Done | ServerlessInferenceConfig (6144MB, max 5) |
+| `serving/inference.py` | ✅ Done | RAG predict_fn: embed → S3 Vectors → Llama |
+| `serving/lambda/handler.py` | ✅ Done | Language-aware, pydantic validation |
+| `serving/lambda/requirements.txt` | ✅ Done | `boto3`, `pydantic>=2` |
+| `infra/terraform/lambda.tf` | ✅ Done | Lambda function + API Gateway HTTP API trigger |
 
 ---
 

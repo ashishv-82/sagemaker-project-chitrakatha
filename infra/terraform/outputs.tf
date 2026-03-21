@@ -96,3 +96,13 @@ output "cloudwatch_dashboard_url" {
   description = "Direct URL to the ChitrakathaMLOpsDashboard in the AWS Console."
   value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=${aws_cloudwatch_dashboard.chitrakatha.dashboard_name}"
 }
+
+output "api_gateway_invoke_url" {
+  description = "The public HTTP URL of the RAG API. Use this to send POST requests containing {'query': '...'}."
+  value       = "${aws_apigatewayv2_stage.default.invoke_url}v1/query"
+}
+
+output "lambda_function_arn" {
+  description = "The ARN of the deployed Lambda bridge function."
+  value       = aws_lambda_function.api_bridge.arn
+}
