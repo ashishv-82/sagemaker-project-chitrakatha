@@ -11,9 +11,9 @@
 |---|---|---|
 | **Phase 0** | Repo scaffold & governance | ✅ Complete |
 | **Phase 1** | Terraform IaC | ✅ Complete |
-| **Phase 2** | Data layer & ingestion | ✅ Complete |
+| **Phase 2** | Data layer (FAISS-on-S3) | ✅ Complete |
 | **Phase 3** | SageMaker MLOps pipeline | ✅ Complete |
-| **Phase 4** | Serving & Lambda bridge | ✅ Complete |
+| **Phase 4** | Serving (FAISS-on-S3) | ✅ Complete |
 | **Phase 5** | Observability & lineage | ✅ Complete |
 | **Phase 6** | CI/CD (GitHub Actions) | ✅ Complete |
 
@@ -65,8 +65,8 @@
 | `src/chitrakatha/ingestion/__init__.py` | ✅ Done | Package marker |
 | `src/chitrakatha/ingestion/chunker.py` | ✅ Done | Sliding-window 15% overlap, NFC normalization, Devanagari-safe |
 | `src/chitrakatha/ingestion/embedder.py` | ✅ Done | Titan Embed v2, batch 25, 3× retry with exponential backoff |
-| `src/chitrakatha/ingestion/vector_writer.py` | ✅ Done | Idempotent batch writes (100/call), query_vectors() for inference |
-| `data/scripts/ingest_to_vectors.py` | ✅ Done | Flow A orchestration: Silver /corpus/ → S3 Vectors |
+| `src/chitrakatha/ingestion/vector_writer.py` | ✅ Done | Refactored: FAISS-on-S3 indexer (working production RAG) |
+| `data/scripts/ingest_to_vectors.py` | ✅ Done | Flow A orchestration: Silver /corpus/ → FAISS-on-S3 |
 | `data/scripts/synthesize_training_pairs.py` | ✅ Done | Flow B RAFT: golden + 2 distractors + CoT → Gold JSONL |
 
 ---

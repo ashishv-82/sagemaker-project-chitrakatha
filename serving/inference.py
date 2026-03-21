@@ -4,19 +4,16 @@ Why: This script runs inside the HuggingFace PyTorch Inference container
      when the Serverless Endpoint is invoked. It handles the complete RAG
      (Retrieval-Augmented Generation) flow during a live user request.
 
+     Transition (v2): Switched from simulated s3vectors API to real FAISS-on-S3.
+     Index is cached at the module level to minimize cold-start latency.
+
 RAG Request Flow (``predict_fn``):
     1. Receive user query (JSON).
     2. Embed the query using Bedrock Titan Embed v2.
-    3. Retrieve top-5 most relevant chunks from S3 Vectors index.
+    3. Retrieve top-k chunks from FAISS index (downloaded from S3 if not cached).
     4. Construct the RAFT-style prompt (query + retrieved chunks).
     5. Call the fine-tuned Llama 3.1 8B model to generate the response.
     6. Return response + listed sources back to the client.
-
-Features:
-    - Cross-lingual generation automatically handled by the fine-tuned model
-      (if query indicates Hindi, answer comes back in Hindi).
-    - Checks env vars injected by ``deploy_endpoint.py`` for S3 Vectors config.
-    - Gracefully handles empty retrieval contexts.
 """
 
 from __future__ import annotations
@@ -24,29 +21,36 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pickle
+import tempfile
 from typing import Any
 
 import boto3
+import faiss
+import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 logger = logging.getLogger(__name__)
+
+# Constants for file names in the S3 vector bucket
+INDEX_FILENAME = "index.faiss"
+META_FILENAME = "metadata.pkl"
 
 # Passed down by deploy_endpoint.py
 S3_VECTORS_BUCKET = os.environ.get("S3_VECTORS_BUCKET")
 S3_VECTOR_INDEX_NAME = os.environ.get("S3_VECTOR_INDEX_NAME")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 
+# Module-level cache for the FAISS index and metadata
+_INDEX_CACHE: dict[str, Any] = {
+    "index": None,
+    "metadata": None,
+}
+
 
 def model_fn(model_dir: str) -> Any:
-    """Load the trained model and tokenizer from model_dir during container boot.
-
-    Args:
-        model_dir: Directory containing model artifacts (downloaded by SageMaker).
-
-    Returns:
-        A loaded HuggingFace ``pipeline`` object ready for text generation.
-    """
+    """Load the trained model and tokenizer from model_dir during container boot."""
     logger.info("Loading model from %s", model_dir)
     device_map = "auto" if torch.cuda.is_available() else "cpu"
 
@@ -62,7 +66,6 @@ def model_fn(model_dir: str) -> Any:
 
     logger.info("Model loaded successfully on %s", device_map)
 
-    # We use a pipeline for simplicity in generation.
     return pipeline(
         "text-generation",
         model=model,
@@ -89,49 +92,66 @@ def _embed_query(query: str) -> list[float]:
         raise ValueError(f"Embedding failed: {exc}") from exc
 
 
-def _retrieve_vectors(embedding: list[float], top_k: int = 5) -> list[dict[str, Any]]:
-    """Query S3 Vectors to find closest matching text chunks."""
+def _load_index() -> tuple[Any, dict[int, Any]]:
+    """Download and load the FAISS index from S3 with caching."""
+    if _INDEX_CACHE["index"] is not None:
+        return _INDEX_CACHE["index"], _INDEX_CACHE["metadata"]
+
     if not S3_VECTORS_BUCKET or not S3_VECTOR_INDEX_NAME:
-        raise ValueError("S3 Vectors environment variables not set.")
+        raise ValueError("S3_VECTORS_BUCKET or S3_VECTOR_INDEX_NAME not configured.")
 
-    s3_vectors = boto3.client("s3vectors", region_name=AWS_REGION)
-    try:
-        resp = s3_vectors.query_vectors(
-            VectorBucketName=S3_VECTORS_BUCKET,
-            IndexName=S3_VECTOR_INDEX_NAME,
-            Vector=embedding,
-            TopK=top_k,
-        )
-    except Exception as exc:
-        logger.error("Error querying S3 Vectors: %s", exc)
-        raise ValueError(f"Vector search failed: {exc}") from exc
+    s3 = boto3.client("s3", region_name=AWS_REGION)
+    prefix = S3_VECTOR_INDEX_NAME.strip("/")
 
-    results = []
-    for match in resp.get("Matches", []):
+    logger.info("Downloading FAISS index from s3://%s/%s", S3_VECTORS_BUCKET, prefix)
+    
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_index_path = os.path.join(tmp_dir, INDEX_FILENAME)
+        local_meta_path = os.path.join(tmp_dir, META_FILENAME)
+
         try:
-            # Metadata is stored as JSON in the S3 Vectors index.
-            metadata = json.loads(match.get("Metadata", "{}"))
-            results.append({
-                "score": match.get("Score", 0.0),
-                "text": metadata.get("chunk_text", ""),
-                "source_document": metadata.get("source_document", "Unknown"),
-                "publisher": metadata.get("publisher", "Unknown"),
-            })
-        except json.JSONDecodeError:
-            continue
+            s3.download_file(S3_VECTORS_BUCKET, f"{prefix}/{INDEX_FILENAME}", local_index_path)
+            s3.download_file(S3_VECTORS_BUCKET, f"{prefix}/{META_FILENAME}", local_meta_path)
+            
+            _INDEX_CACHE["index"] = faiss.read_index(local_index_path)
+            with open(local_meta_path, "rb") as f:
+                _INDEX_CACHE["metadata"] = pickle.load(f)
+            
+            logger.info("Index loaded successfully with %d vectors.", _INDEX_CACHE["index"].ntotal)
+            return _INDEX_CACHE["index"], _INDEX_CACHE["metadata"]
+        except Exception as exc:
+            logger.error("Failed to load FAISS index from S3: %s", exc)
+            return None, {}
 
+
+def _retrieve_vectors(embedding: list[float], top_k: int = 5) -> list[dict[str, Any]]:
+    """Retrieve similar vectors using the local FAISS index."""
+    index, metadata_map = _load_index()
+    if index is None:
+        return []
+
+    # FAISS search
+    query_np = np.array([embedding]).astype("float32")
+    faiss.normalize_L2(query_np)
+    
+    scores, indices = index.search(query_np, top_k)
+    
+    results = []
+    for score, idx in zip(scores[0], indices[0]):
+        if idx == -1: continue
+        
+        meta = metadata_map.get(idx, {})
+        results.append({
+            "score": float(score),
+            "text": meta.get("chunk_text", ""),
+            "source_document": meta.get("source_document", "Unknown"),
+            "publisher": meta.get("publisher", "Unknown"),
+        })
     return results
 
 
 def _build_raft_prompt(query: str, retrieved_docs: list[dict[str, Any]]) -> str:
-    """Construct the RAFT prompt format used during training.
-
-    [Document N]: {text}
-    ...
-    Question: {query}
-    Think step by step, then answer using ONLY the relevant document above.
-    Answer:
-    """
+    """Construct the RAFT prompt format used during training."""
     doc_blocks = []
     for i, doc in enumerate(retrieved_docs):
         text = doc["text"]
@@ -145,16 +165,8 @@ def _build_raft_prompt(query: str, retrieved_docs: list[dict[str, Any]]) -> str:
     )
 
 
-def predict_fn(data: dict | str, model_pipeline: Any) -> list[str] | dict:
-    """Handle a single inference request.
-
-    Args:
-        data: Payload from SageMaker invoke_endpoint (usually dict).
-        model_pipeline: The object returned by ``model_fn``.
-
-    Returns:
-        JSON-serializable response dict or string list.
-    """
+def predict_fn(data: dict | str, model_pipeline: Any) -> dict:
+    """Handle a single inference request."""
     if isinstance(data, str):
         try:
             payload = json.loads(data)
@@ -169,10 +181,10 @@ def predict_fn(data: dict | str, model_pipeline: Any) -> list[str] | dict:
 
     logger.info("Received query: %s", query)
 
-    # Step 1: Embed Query
+    # 1. Embed Query
     query_embedding = _embed_query(query)
 
-    # Step 2: Retrieve Top-5
+    # 2. Retrieve Top-5
     retrieved = _retrieve_vectors(query_embedding, top_k=5)
     if not retrieved:
         return {
@@ -180,10 +192,10 @@ def predict_fn(data: dict | str, model_pipeline: Any) -> list[str] | dict:
             "sources": [],
         }
 
-    # Step 3: Format Prompt
+    # 3. Format Prompt
     prompt = _build_raft_prompt(query, retrieved)
 
-    # Step 4: Generate (Serverless inference caps our tokens; use conservatively).
+    # 4. Generate
     outputs = model_pipeline(
         prompt,
         max_new_tokens=256,
@@ -194,8 +206,6 @@ def predict_fn(data: dict | str, model_pipeline: Any) -> list[str] | dict:
     )
     generated_text = outputs[0]["generated_text"].strip()
 
-    # Log the chain-of-thought but don't return it to end user directly,
-    # or just return everything after 'Answer:' if using that format strictly.
     answer_idx = generated_text.rfind("Answer:")
     if answer_idx != -1:
         answer = generated_text[answer_idx + len("Answer:") :].strip()

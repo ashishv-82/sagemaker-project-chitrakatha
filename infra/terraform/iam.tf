@@ -230,30 +230,7 @@ resource "aws_iam_role_policy" "sagemaker_control_plane" {
   policy = data.aws_iam_policy_document.sagemaker_control_plane.json
 }
 
-###############################################################################
-# Inline Policy: S3 Vectors (read/write vectors to the index)
-###############################################################################
 
-data "aws_iam_policy_document" "sagemaker_s3_vectors" {
-  statement {
-    sid    = "S3VectorsReadWriteProjectIndex"
-    effect = "Allow"
-    actions = [
-      "s3vectors:PutVectors",
-      "s3vectors:GetVectors",
-      "s3vectors:DeleteVectors",
-      "s3vectors:QueryVectors",
-      "s3vectors:ListVectors"
-    ]
-    resources = [local.s3_vector_index_arn]
-  }
-}
-
-resource "aws_iam_role_policy" "sagemaker_s3_vectors" {
-  name   = "s3-vectors-project-index"
-  role   = aws_iam_role.sagemaker_execution.id
-  policy = data.aws_iam_policy_document.sagemaker_s3_vectors.json
-}
 
 ###############################################################################
 # Lambda Execution Role (for the API Gateway bridge in Phase 4)

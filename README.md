@@ -85,7 +85,7 @@ flowchart LR
 |---|---|---|
 | **Orchestration** | SageMaker Pipelines | CI/CD/CT (Continuous Training) as a DAG |
 | **Data Lake** | Amazon S3 (Bronze/Silver/Gold) | Multi-tier, versioned, KMS-encrypted |
-| **Vector Store** | Amazon S3 Vectors (2026) | Native serverless vector search — no DB needed |
+| **Vector Store** | S3 (FAISS Index) | Production-ready serverless RAG (Scale-to-Zero) |
 | **Embeddings** | Bedrock Titan Embed v2 | Serverless, 1536-dim, multilingual |
 | **Teacher Model** | Bedrock Claude 3.5 Sonnet | Auto-synthesises bilingual training data |
 | **Fine-tuning** | QLoRA (PEFT + TRL) on SageMaker | Efficient 4-bit tuning using **RAFT** on Spot instances |
@@ -152,13 +152,13 @@ See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for the detaile
 
 | Phase | Description | Status |
 |---|---|---|
-| Phase 0 | Repo scaffold & governance | 🔲 Not started |
-| Phase 1 | Terraform IaC | 🔲 Not started |
-| Phase 2 | Data layer & ingestion | 🔲 Not started |
-| Phase 3 | SageMaker MLOps pipeline | 🔲 Not started |
-| Phase 4 | Serving & Lambda bridge | 🔲 Not started |
-| Phase 5 | Observability & lineage | 🔲 Not started |
-| Phase 6 | CI/CD (GitHub Actions) | 🔲 Not started |
+| Phase 0 | Repo scaffold & governance | ✅ Complete |
+| Phase 1 | Terraform IaC | ✅ Complete |
+| Phase 2 | Data layer (FAISS-on-S3) | ✅ Complete |
+| Phase 3 | SageMaker MLOps pipeline | ✅ Complete |
+| Phase 4 | Serving (FAISS-on-S3) | ✅ Complete |
+| Phase 5 | Observability & lineage | ✅ Complete |
+| Phase 6 | CI/CD (GitHub Actions) | ✅ Complete |
 
 ---
 

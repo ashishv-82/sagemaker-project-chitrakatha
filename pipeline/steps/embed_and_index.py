@@ -23,10 +23,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pickle
 import sys
+import tempfile
 from pathlib import Path
 
 import boto3
+from botocore.exceptions import ClientError
 
 from chitrakatha.config import Settings
 from chitrakatha.exceptions import BedrockEmbeddingError, DataIngestionError, S3VectorError
@@ -42,19 +45,28 @@ INPUT_CORPUS_PATH = Path("/opt/ml/processing/input/corpus/corpus.jsonl")
 
 
 def _load_existing_vector_ids(settings: Settings) -> set[str]:
-    """Pre-load existing vector IDs for idempotency. Returns empty set on failure."""
-    s3vectors_client = boto3.client("s3vectors", region_name=settings.aws_region)
+    """Pre-load existing vector IDs for idempotency by reading the FAISS metadata.
+    
+    Returns empty set if the index doesn't exist yet.
+    """
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+    prefix = settings.s3_vector_index_name.strip("/")
     existing: set[str] = set()
-    try:
-        paginator = s3vectors_client.get_paginator("list_vectors")
-        for page in paginator.paginate(
-            VectorBucketName=settings.s3_vectors_bucket,
-            IndexName=settings.s3_vector_index_name,
-        ):
-            for vec in page.get("Vectors", []):
-                existing.add(vec["Key"])
-    except Exception as exc:
-        logger.warning("Could not list existing vectors (first run?): %s", exc)
+    
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta_path = os.path.join(tmp_dir, "metadata.pkl")
+        try:
+            s3.download_file(settings.s3_vectors_bucket, f"{prefix}/metadata.pkl", meta_path)
+            with open(meta_path, "rb") as f:
+                metadata_map = pickle.load(f)
+                # The metadata values in our new FAISS writer contain the original chunk_id
+                # (via _build_metadata -> chunk.chunk_id wasn't explicit but I should add it
+                # to the metadata dict to make this lookup easy).
+                for meta in metadata_map.values():
+                    if "chunk_id" in meta:
+                        existing.add(meta["chunk_id"])
+        except ClientError:
+            logger.info("No existing vector metadata found. Starting fresh.")
     return existing
 
 

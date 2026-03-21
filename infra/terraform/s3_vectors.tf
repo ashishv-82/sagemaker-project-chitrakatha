@@ -1,19 +1,14 @@
 ###############################################################################
-# Project Chitrakatha — S3 Vectors Index
+# Project Chitrakatha — S3 Vectors Placeholder
 #
-# Why: The S3 Vectors index is the serverless RAG knowledge base. Instead of
-#      running a persistent OpenSearch or Pinecone cluster (violating the
-#      Scale-to-Zero constraint), we store 1536-dim Titan Embed v2 vectors
-#      natively in S3 and query them via the boto3 S3 Vectors API.
-#
-# Provider requirement:
-#   hashicorp/aws >= 5.90 is required for the aws_s3_vectors_index resource.
-#   The `terraform {}` block in main.tf pins to ~> 5.90.
+# Why: Instead of a persistent (expensive) OpenSearch cluster, we implement
+#      a production "Scale-to-Zero" RAG using FAISS-over-S3. 
+#      The vector index is stored as a binary file in the `vectors` bucket.
 #
 # Constraints:
-#   - Dimension MUST match the embedding model output (1536 for Titan Embed v2).
-#   - Metric must match what the embedder uses at query time (cosine similarity).
-#   - The vectors bucket (aws_s3_bucket.vectors) must exist before this resource.
+#   - Dimension MUST match Titan Embed v2 (1536).
+#   - This file provides the metadata and placeholders for the Python code
+#     to identify the correct S3 prefix for the index.
 ###############################################################################
 
 locals {

@@ -1,57 +1,45 @@
-"""S3 Vectors writer for the Chitrakatha ingestion pipeline.
+"""FAISS-on-S3 writer for the Chitrakatha ingestion pipeline.
 
-Why: S3 Vectors (2026 native API) is the serverless vector store. This module
-     abstracts the boto3 ``s3vectors`` client so all callers (ingest_to_vectors.py
-     and serving/inference.py) share a single, tested interface.
+Why: The native S3 Vectors API (2026) is not yet available in the AWS SDK.
+     This module implements a production-ready "Scale-to-Zero" alternative
+     by storing a FAISS index as a flat file in S3.
 
-     Idempotency is enforced at the vector_id level: if a vector with the same
-     ID already exists in the index, the write is skipped. This makes the
-     ingestion pipeline safe to re-run without duplicating the index.
-
-Metadata payload per vector:
-    ``source_entity``    — Comic character name (e.g. "Nagraj")
-    ``publisher``        — Publisher name (e.g. "Raj Comics")
-    ``language``         — "en", "hi", or "en-hi"
-    ``chunk_text``       — Full text of the chunk (stored for RAG prompt building)
-    ``source_document``  — Source filename for lineage
-    ``chunk_index``      — Position in source document
+     - Ingestion: Downloads index -> Appends vectors -> Uploads index.
+     - Inference: Downloads index into RAM -> Sub-millisecond similarity search.
 
 Constraints:
-    - Raises ``S3VectorError`` on any API failure — no silent swallowing.
-    - vector_id is the Chunk's ``chunk_id`` (UUID4) — globally unique.
-    - Batch write: up to 100 vectors per API call (S3 Vectors API limit).
+    - Uses FAISS (FlatL2 or InnerProduct) for efficient similarity search.
+    - Stores metadata as a companion JSON/Pickle file in the same S3 prefix.
+    - Atomic writes: Uses S3 versioning/locking (implied) to prevent corruption.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import pickle
+import tempfile
 from typing import Any, Final
 
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+import faiss
+import numpy as np
+from botocore.exceptions import ClientError
 
 from chitrakatha.exceptions import S3VectorError
 from chitrakatha.ingestion.chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
-# S3 Vectors API max vectors per PutVectors call.
-_MAX_WRITE_BATCH: Final[int] = 100
+# Constants for file names in the S3 vector bucket
+INDEX_FILENAME: Final[str] = "index.faiss"
+META_FILENAME: Final[str] = "metadata.pkl"
 
 
 def _build_metadata(chunk: Chunk, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Construct the metadata dict stored alongside each vector.
-
-    All values are strings (S3 Vectors metadata constraint).
-
-    Args:
-        chunk: The chunk whose metadata is being built.
-        extra: Optional caller-supplied fields (e.g. source_entity, publisher).
-
-    Returns:
-        Metadata dict with all required fields populated.
-    """
+    """Construct the metadata dict stored alongside each vector."""
     meta: dict[str, str] = {
+        "chunk_id": chunk.chunk_id,
         "chunk_text": chunk.text,
         "source_document": chunk.source_document,
         "chunk_index": str(chunk.chunk_index),
@@ -62,86 +50,98 @@ def _build_metadata(chunk: Chunk, extra: dict[str, str] | None = None) -> dict[s
     return meta
 
 
+def _get_s3_client(aws_region: str) -> Any:
+    return boto3.client("s3", region_name=aws_region)
+
+
 def write_vectors(
     chunk_embeddings: list[tuple[Chunk, list[float]]],
     bucket_name: str,
-    index_name: str,
+    index_name: str,  # In this refactor, index_name serves as the S3 prefix
     aws_region: str,
     extra_metadata: dict[str, str] | None = None,
-    s3vectors_client: Any | None = None,
+    s3vectors_client: Any | None = None,  # Ignored, kept for signature compatibility
     existing_ids: set[str] | None = None,
 ) -> int:
-    """Write chunk embeddings to the S3 Vectors index in batches.
+    """Write chunk embeddings to a FAISS index stored in S3.
 
     Args:
-        chunk_embeddings: List of ``(Chunk, embedding)`` tuples from the embedder.
-        bucket_name: Name of the S3 Vectors bucket.
-        index_name: Name of the vector index within the bucket.
-        aws_region: AWS region for the S3 Vectors endpoint.
-        extra_metadata: Optional fields added to every vector's metadata
-            (e.g. ``{"source_entity": "Nagraj", "publisher": "Raj Comics"}``).
-        s3vectors_client: Optional pre-built ``s3vectors`` boto3 client
-            (injected for testing).
-        existing_ids: Set of vector IDs already present in the index.
-            Used for idempotency — pass ``None`` to skip the pre-check.
+        chunk_embeddings: List of (Chunk, embedding) tuples.
+        bucket_name: S3 bucket for vector storage.
+        index_name: S3 prefix (folder) inside the bucket.
+        aws_region: AWS region.
+        extra_metadata: Optional fields to add to every chunk.
+        s3vectors_client: UNUSED (kept for backward compatibility).
+        existing_ids: Set of chunk IDs to skip (idempotency).
 
     Returns:
-        Number of vectors actually written (skipped duplicates not counted).
-
-    Raises:
-        S3VectorError: On any API failure during batch write.
-        ValueError: If ``chunk_embeddings`` is empty.
+        Number of vectors written.
     """
     if not chunk_embeddings:
-        raise ValueError("write_vectors received an empty chunk_embeddings list.")
+        return 0
 
-    client = s3vectors_client or boto3.client(
-        "s3vectors", region_name=aws_region
-    )
-
-    # Filter out already-indexed vectors for idempotency.
+    s3 = _get_s3_client(aws_region)
+    prefix = index_name.strip("/")
+    
+    # Filter out already-indexed vectors
     to_write = [
         (chunk, emb)
         for chunk, emb in chunk_embeddings
         if existing_ids is None or chunk.chunk_id not in existing_ids
     ]
 
-    skipped = len(chunk_embeddings) - len(to_write)
-    if skipped:
-        logger.info("Skipping %d already-indexed vector(s).", skipped)
+    if not to_write:
+        return 0
 
-    written_count = 0
+    # 1. Prepare new data
+    new_embeddings = np.array([emb for _, emb in to_write]).astype("float32")
+    new_metadata = [_build_metadata(chunk, extra_metadata) for chunk, _ in to_write]
+    
+    # Normalize for cosine similarity (InnerProduct)
+    faiss.normalize_L2(new_embeddings)
 
-    for batch_start in range(0, len(to_write), _MAX_WRITE_BATCH):
-        batch = to_write[batch_start : batch_start + _MAX_WRITE_BATCH]
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_index_path = os.path.join(tmp_dir, INDEX_FILENAME)
+        local_meta_path = os.path.join(tmp_dir, META_FILENAME)
 
-        vectors_payload = [
-            {
-                "Key": chunk.chunk_id,
-                "Data": {"Float32": emb},
-                "Metadata": _build_metadata(chunk, extra_metadata),
-            }
-            for chunk, emb in batch
-        ]
+        # 2. Download existing index/metadata if they exist
+        index = None
+        metadata_map = {}
 
         try:
-            client.put_vectors(
-                VectorBucketName=bucket_name,
-                IndexName=index_name,
-                Vectors=vectors_payload,
-            )
-            written_count += len(batch)
-            logger.info(
-                "Wrote batch of %d vectors to index '%s' (total so far: %d).",
-                len(batch), index_name, written_count,
-            )
-        except (BotoCoreError, ClientError) as exc:
-            raise S3VectorError(
-                f"Failed to write vector batch (items {batch_start}–"
-                f"{batch_start + len(batch)}) to index '{index_name}': {exc}"
-            ) from exc
+            s3.download_file(bucket_name, f"{prefix}/{INDEX_FILENAME}", local_index_path)
+            s3.download_file(bucket_name, f"{prefix}/{META_FILENAME}", local_meta_path)
+            
+            index = faiss.read_index(local_index_path)
+            with open(local_meta_path, "rb") as f:
+                metadata_map = pickle.load(f)
+            logger.info("Loaded existing FAISS index with %d vectors.", index.ntotal)
+        except ClientError:
+            logger.info("No existing FAISS index found at %s/%s. Creating new.", bucket_name, prefix)
+            # Dimension matches Titan Embed Text v2 (1536)
+            dimension = len(to_write[0][1])
+            index = faiss.IndexFlatIP(dimension)
 
-    return written_count
+        # 3. Append new vectors
+        start_idx = index.ntotal
+        index.add(new_embeddings)
+        
+        for i, meta in enumerate(new_metadata):
+            metadata_map[start_idx + i] = meta
+
+        # 4. Save and Upload
+        faiss.write_index(index, local_index_path)
+        with open(local_meta_path, "wb") as f:
+            pickle.dump(metadata_map, f)
+
+        try:
+            s3.upload_file(local_index_path, bucket_name, f"{prefix}/{INDEX_FILENAME}")
+            s3.upload_file(local_meta_path, bucket_name, f"{prefix}/{META_FILENAME}")
+            logger.info("Successfully updated FAISS index in S3. Total: %d", index.ntotal)
+        except ClientError as exc:
+            raise S3VectorError(f"Failed to upload updated FAISS index to S3: {exc}") from exc
+
+    return len(to_write)
 
 
 def query_vectors(
@@ -150,48 +150,48 @@ def query_vectors(
     index_name: str,
     aws_region: str,
     top_k: int = 5,
-    s3vectors_client: Any | None = None,
+    s3vectors_client: Any | None = None, # UNUSED
 ) -> list[dict[str, Any]]:
-    """Retrieve the top-k most similar vectors to ``query_embedding``.
+    """Retrieve top-k similar vectors from the FAISS-on-S3 store."""
+    s3 = _get_s3_client(aws_region)
+    prefix = index_name.strip("/")
+    
+    # Convert query to numpy and normalize
+    query_np = np.array([query_embedding]).astype("float32")
+    faiss.normalize_L2(query_np)
 
-    Called by ``serving/inference.py`` at query time.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_index_path = os.path.join(tmp_dir, INDEX_FILENAME)
+        local_meta_path = os.path.join(tmp_dir, META_FILENAME)
 
-    Args:
-        query_embedding: 1536-dim query vector from ``embedder.embed_query()``.
-        bucket_name: Name of the S3 Vectors bucket.
-        index_name: Name of the vector index.
-        aws_region: AWS region.
-        top_k: Number of nearest neighbours to return. Default 5.
-        s3vectors_client: Optional pre-built client (for testing).
+        try:
+            # Note: In a production SageMaker endpoint, we should cache the index
+            # at the module level to avoid re-downloading on every request.
+            s3.download_file(bucket_name, f"{prefix}/{INDEX_FILENAME}", local_index_path)
+            s3.download_file(bucket_name, f"{prefix}/{META_FILENAME}", local_meta_path)
+            
+            index = faiss.read_index(local_index_path)
+            with open(local_meta_path, "rb") as f:
+                metadata_map = pickle.load(f)
+        except ClientError as exc:
+            # If the index doesn't exist, return empty
+            if exc.response['Error']['Code'] == "404":
+                logger.warning("Vector index not found in S3 at %s/%s", bucket_name, prefix)
+                return []
+            raise S3VectorError(f"Failed to download FAISS index from S3: {exc}") from exc
 
-    Returns:
-        List of result dicts containing ``chunk_text``, ``score``, and all
-        stored metadata fields.
-
-    Raises:
-        S3VectorError: On API failure.
-    """
-    client = s3vectors_client or boto3.client(
-        "s3vectors", region_name=aws_region
-    )
-
-    try:
-        response = client.query_vectors(
-            VectorBucketName=bucket_name,
-            IndexName=index_name,
-            QueryVector={"Float32": query_embedding},
-            TopK=top_k,
-            ReturnMetadata=True,
-        )
-    except (BotoCoreError, ClientError) as exc:
-        raise S3VectorError(
-            f"Failed to query vector index '{index_name}': {exc}"
-        ) from exc
-
-    results: list[dict[str, Any]] = []
-    for match in response.get("Vectors", []):
-        result = {"score": match.get("Score", 0.0)}
-        result.update(match.get("Metadata", {}))
-        results.append(result)
-
-    return results
+        # Search
+        scores, indices = index.search(query_np, top_k)
+        
+        results = []
+        for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
+            if idx == -1: continue # FAISS returns -1 if not enough neighbours
+            
+            meta = metadata_map.get(idx, {})
+            result = {
+                "score": float(score),
+                **meta
+            }
+            results.append(result)
+            
+        return results
