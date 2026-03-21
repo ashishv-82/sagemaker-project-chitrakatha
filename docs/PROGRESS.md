@@ -13,7 +13,7 @@
 | **Phase 1** | Terraform IaC | ✅ Complete |
 | **Phase 2** | Data layer & ingestion | ✅ Complete |
 | **Phase 3** | SageMaker MLOps pipeline | ✅ Complete |
-| **Phase 4** | Serving & Lambda bridge | 🔲 Not started |
+| **Phase 4** | Serving & Lambda bridge | ✅ Complete |
 | **Phase 5** | Observability & lineage | 🔲 Not started |
 | **Phase 6** | CI/CD (GitHub Actions) | 🔲 Not started |
 
