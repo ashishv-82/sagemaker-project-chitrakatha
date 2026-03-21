@@ -1,0 +1,7 @@
+faiss-cpu
+numpy
+boto3
+pydantic>=2
+torch
+transformers
+sentencepiece

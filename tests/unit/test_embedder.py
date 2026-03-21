@@ -54,6 +54,7 @@ class TestEmbedChunks:
         mock_client.invoke_model.return_value = _mock_bedrock_response(fake_emb)
 
         results = embed_chunks([chunk], aws_region="ap-southeast-2", bedrock_client=mock_client)
+        print(f"\n  [TEST] Single Chunk Embedding: Received {len(results[0][1])}-dim vector for chunk '{chunk.text[:10]}...'")
 
         assert len(results) == 1
         returned_chunk, embedding = results[0]
@@ -138,6 +139,7 @@ class TestEmbedQuery:
         mock_client.invoke_model.return_value = _mock_bedrock_response(fake_emb)
 
         result = embed_query("Who is Nagraj?", aws_region="ap-southeast-2", bedrock_client=mock_client)
+        print(f"  [TEST] Query Embedding: Generated {len(result)}-dim vector for user query.")
 
         assert len(result) == _EXPECTED_DIM
 

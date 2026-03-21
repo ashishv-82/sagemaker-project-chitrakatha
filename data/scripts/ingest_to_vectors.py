@@ -1,33 +1,21 @@
-"""Flow A orchestration: Silver corpus → chunk → embed → S3 Vectors index.
+"""Flow A orchestration: Silver corpus → chunk → embed → FAISS-on-S3 index.
 
 Why: This script is the top-level orchestrator for the RAG knowledge base
      ingestion path. It reads clean JSONL from S3 Silver /corpus/, chunks
      each document, embeds in batches via Bedrock Titan Embed v2, and writes
-     to the S3 Vectors index. It is designed to be run as a SageMaker
-     Processing Job (see pipeline/steps/embed_and_index.py).
+     to a FAISS index stored in S3. 
 
-Idempotency:
-    Before writing, the script fetches all existing vector IDs from the index
-    and passes them to ``vector_writer.write_vectors()`` to skip re-embedding
-    unchanged documents. This makes the pipeline safe to re-trigger without
-    bloating the index.
-
-Input format (S3 Silver /corpus/ objects):
-    UTF-8 JSON Lines, one document per line:
-    ``{"text": "...", "source_document": "nagraj_wiki.txt", "language": "en"}``
-
-Constraints:
-    - All config sourced from ``Settings`` (environment variables from
-      Terraform outputs) — no hardcoded bucket names.
-    - Never crashes silently; any document-level error is logged and counted.
-    - Exits with code 1 if > 0 documents fail (so the SageMaker step fails).
+     Transition (v2): Switched from simulated s3vectors API to real FAISS-on-S3.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import pickle
 import sys
+import tempfile
 from pathlib import Path
 
 import boto3
@@ -37,7 +25,7 @@ from chitrakatha.config import Settings
 from chitrakatha.exceptions import BedrockEmbeddingError, DataIngestionError, S3VectorError
 from chitrakatha.ingestion.chunker import chunk_text
 from chitrakatha.ingestion.embedder import embed_chunks
-from chitrakatha.ingestion.vector_writer import query_vectors, write_vectors
+from chitrakatha.ingestion.vector_writer import write_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +38,7 @@ def _list_silver_objects(
     bucket: str,
     prefix: str,
 ) -> list[str]:
-    """List all object keys under ``prefix`` in the Silver bucket.
-
-    Args:
-        s3_client: Boto3 S3 client.
-        bucket: Silver bucket name.
-        prefix: Key prefix to list (e.g. ``"corpus/"``).
-
-    Returns:
-        Sorted list of S3 object keys.
-    """
+    """List all object keys under ``prefix`` in the Silver bucket."""
     keys: list[str] = []
     paginator = s3_client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
@@ -68,55 +47,35 @@ def _list_silver_objects(
     return sorted(keys)
 
 
-def _load_existing_vector_ids(
-    settings: Settings,
-    s3vectors_client: boto3.client,
-) -> set[str]:
-    """Fetch all existing vector IDs from the index for idempotency checking.
+def _load_existing_vector_ids(settings: Settings) -> set[str]:
+    """Pre-load existing vector IDs from the FAISS metadata file in S3."""
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+    prefix = settings.s3_vector_index_name.strip("/")
+    existing: set[str] = set()
 
-    Args:
-        settings: Runtime settings.
-        s3vectors_client: Boto3 s3vectors client.
-
-    Returns:
-        Set of existing vector ID strings (chunk_ids).
-    """
-    existing: set[str] = []
-    try:
-        paginator = s3vectors_client.get_paginator("list_vectors")
-        for page in paginator.paginate(
-            VectorBucketName=settings.s3_vectors_bucket,
-            IndexName=settings.s3_vector_index_name,
-        ):
-            for vec in page.get("Vectors", []):
-                existing.append(vec["Key"])
-    except (BotoCoreError, ClientError) as exc:
-        logger.warning(
-            "Could not list existing vectors (may be first run): %s. "
-            "Proceeding without idempotency check.",
-            exc,
-        )
-        return set()
-    return set(existing)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta_path = os.path.join(tmp_dir, "metadata.pkl")
+        try:
+            s3.download_file(settings.s3_vectors_bucket, f"{prefix}/metadata.pkl", meta_path)
+            with open(meta_path, "rb") as f:
+                metadata_map = pickle.load(f)
+                for meta in metadata_map.values():
+                    if "chunk_id" in meta:
+                        existing.add(meta["chunk_id"])
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "404":
+                logger.info("No existing vector index found. Starting fresh.")
+            else:
+                logger.warning("Error checking for existing vectors: %s", exc)
+    return existing
 
 
 def run(settings: Settings) -> int:
-    """Execute the full Flow A ingestion pipeline.
-
-    Reads every JSONL file from S3 Silver /corpus/, chunks, embeds, and
-    writes to the S3 Vectors index. Counts and reports errors.
-
-    Args:
-        settings: Pydantic settings from environment (Terraform outputs).
-
-    Returns:
-        Number of documents that failed processing.
-    """
+    """Execute the full Flow A ingestion pipeline."""
     s3_client = boto3.client("s3", region_name=settings.aws_region)
-    s3vectors_client = boto3.client("s3vectors", region_name=settings.aws_region)
 
     # Pre-load existing IDs for idempotency.
-    existing_ids = _load_existing_vector_ids(settings, s3vectors_client)
+    existing_ids = _load_existing_vector_ids(settings)
     logger.info("Found %d existing vectors in index.", len(existing_ids))
 
     keys = _list_silver_objects(s3_client, settings.s3_silver_bucket, _SILVER_CORPUS_PREFIX)
@@ -163,7 +122,7 @@ def run(settings: Settings) -> int:
                     bucket_name=settings.s3_vectors_bucket,
                     index_name=settings.s3_vector_index_name,
                     aws_region=settings.aws_region,
-                    extra_metadata={"language": language, "source_document": source_document},
+                    extra_metadata={"language": language, "source_id": f"{key}:{line_no}"},
                     existing_ids=existing_ids,
                 )
                 total_written += written

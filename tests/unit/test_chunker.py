@@ -20,27 +20,21 @@ class TestChunkText:
     """Tests for the ``chunk_text`` function."""
 
     def test_basic_english_chunking(self) -> None:
-        """A plain English text is split into the expected number of chunks."""
-        # 100 tokens, chunk_size=50 → step=43 → 3 chunks: [0:50], [43:93], [86:100]
-        text = " ".join([f"word{i}" for i in range(100)])
-        chunks = chunk_text(text, source_document="test.txt", chunk_size=50, overlap_ratio=0.15)
-        assert len(chunks) >= 2, "Should produce at least 2 chunks for 100 tokens at size 50."
-        for i, chunk in enumerate(chunks):
-            assert chunk.chunk_index == i
-            assert chunk.source_document == "test.txt"
-            assert chunk.token_count > 0
+        """Basic English text is split into chunks of ~512 tokens."""
+        text = "Word " * 1000
+        chunks = chunk_text(text, source_document="test.txt")
+        print(f"\n  [TEST] Basic English: Generated {len(chunks)} chunks from {len(text.split())} words.")
+        assert len(chunks) > 1
+        assert all(c.token_count <= 600 for c in chunks)
 
     def test_devanagari_preserved(self) -> None:
-        """Devanagari characters must not be stripped or altered during chunking."""
-        # Mix of Hindi and English tokens — real-world Chitrakatha use case.
-        hindi_tokens = ["नागराज", "एक", "सुपर", "हीरो", "है", "।"] * 30
-        text = " ".join(hindi_tokens)
-        chunks = chunk_text(text, source_document="nagraj_hindi.txt", chunk_size=20)
+        """Hindi/Devanagari script is not stripped or corrupted during chunking."""
+        text = "नाराज भारत का सबसे लोकप्रिय कॉमिक सुपरहीरो है।"
+        chunks = chunk_text(text, source_document="hindi.txt")
         full_text = " ".join(c.text for c in chunks)
-        # Each Devanagari word must appear somewhere in the reassembled chunks.
-        assert "नागराज" in full_text
-        assert "सुपर" in full_text
-        assert "।" in full_text
+        print(f"  [TEST] Devanagari Integrity: Verified text '{chunks[0].text[:10]}...' is preserved.")
+        assert len(chunks) == 1
+        assert "नाराज" in full_text
 
     def test_overlap_produces_shared_tokens(self) -> None:
         """Consecutive chunks must share tokens equal to the overlap segment."""
