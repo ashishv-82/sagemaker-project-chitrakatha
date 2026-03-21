@@ -1,0 +1,43 @@
+name: "CT — Continuous Training"
+
+on:
+  push:
+    branches: ["main"]
+  # Can also be triggered via external event (e.g., S3 upload of new data)
+  repository_dispatch:
+    types: [trigger-training]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # Required for AWS OIDC
+  contents: read
+
+jobs:
+  training-pipeline:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3 sagemaker
+
+      - name: Trigger SageMaker Pipeline
+        run: |
+          echo "Starting Chitrakatha Training Pipeline..."
+          python pipeline/pipeline.py --execute

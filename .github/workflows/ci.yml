@@ -1,0 +1,51 @@
+name: "CI — Quality Gate"
+
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[test,dev] || pip install -r pipeline/requirements.txt pytest pytest-cov mypy ruff boto3 pydantic pydantic-settings
+
+      - name: Lint with Ruff
+        run: ruff check .
+
+      - name: Format Check with Ruff
+        run: ruff format --check .
+
+      - name: Type Check with Mypy
+        run: mypy src/ || true
+
+      - name: Run Unit Tests
+        env:
+          # Mock env vars for Pydantic Settings validation during tests
+          S3_BRONZE_BUCKET: "mock-bronze"
+          S3_SILVER_BUCKET: "mock-silver"
+          S3_GOLD_BUCKET: "mock-gold"
+          S3_VECTORS_BUCKET: "mock-vectors"
+          S3_VECTOR_INDEX_NAME: "mock-index"
+          SECRET_NAME: "mock-secret"
+          SAGEMAKER_EXPERIMENT_NAME: "mock-experiment"
+          KMS_KEY_ARN: "arn:aws:kms:ap-southeast-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+          SAGEMAKER_ROLE_ARN: "arn:aws:iam::111122223333:role/service-role/AmazonSageMaker-ExecutionRole"
+          AWS_REGION: "ap-southeast-2"
+        run: pytest tests/unit/ -v

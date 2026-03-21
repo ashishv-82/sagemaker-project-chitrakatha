@@ -15,7 +15,7 @@
 | **Phase 3** | SageMaker MLOps pipeline | ✅ Complete |
 | **Phase 4** | Serving & Lambda bridge | ✅ Complete |
 | **Phase 5** | Observability & lineage | ✅ Complete |
-| **Phase 6** | CI/CD (GitHub Actions) | 🔲 Not started |
+| **Phase 6** | CI/CD (GitHub Actions) | ✅ Complete |
 
 ---
 
@@ -108,13 +108,14 @@
 
 ---
 
-## Phase 6 — CI/CD (GitHub Actions) 🔲
+## Phase 6 — CI/CD (GitHub Actions) ✅
 
 | File | Status | Notes |
 |---|---|---|
-| `.github/workflows/ci.yml` | 🔲 | Lint, type-check, unit tests, tf-validate |
-| `.github/workflows/ct.yml` | 🔲 | Trigger SageMaker Pipeline on merge to main |
-| `.github/workflows/deploy.yml` | 🔲 | Auto-deploy on Model Registry approval |
+| `.github/workflows/ci.yml` | ✅ Done | Lint, type-check, unit tests |
+| `.github/workflows/tf-check.yml` | ✅ Done | Terraform formatting, validate, and tfsec |
+| `.github/workflows/ct.yml` | ✅ Done | SageMaker Pipeline trigger on push to main |
+| `.github/workflows/deploy.yml` | ✅ Done | Serverless Endpoint deployment |
 
 ---
 

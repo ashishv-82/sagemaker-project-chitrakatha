@@ -1,0 +1,45 @@
+name: "CD — Continuous Deployment"
+
+on:
+  # In a full MLOps setup, this would be an EventBridge webhook from SageMaker
+  # upon Model Package Approval. For simplicity via GitHub Actions, we allow manual
+  # dispatch or chain it after the CT workflow (if we had a watcher).
+  workflow_dispatch:
+  repository_dispatch:
+    types: [model-approved]
+
+permissions:
+  id-token: write   # Required for AWS OIDC
+  contents: read
+
+jobs:
+  deploy-endpoint:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3 sagemaker pydantic pydantic-settings
+
+      - name: Deploy Serverless Endpoint
+        # The deploy script automatically pulls config from AWS parameters/env vars
+        # assuming Terraform has run.
+        run: |
+          echo "Deploying newly approved model to Serverless Endpoint..."
+          python serving/deploy_endpoint.py
