@@ -10,7 +10,7 @@
 | Phase | Description | Status |
 |---|---|---|
 | **Phase 0** | Repo scaffold & governance | ✅ Complete |
-| **Phase 1** | Terraform IaC | 🔲 Not started |
+| **Phase 1** | Terraform IaC | ✅ Complete |
 | **Phase 2** | Data layer & ingestion | 🔲 Not started |
 | **Phase 3** | SageMaker MLOps pipeline | 🔲 Not started |
 | **Phase 4** | Serving & Lambda bridge | 🔲 Not started |
@@ -41,19 +41,19 @@
 
 ---
 
-## Phase 1 — Infrastructure-as-Code (Terraform) 🔲
+## Phase 1 — Infrastructure-as-Code (Terraform) ✅
 
 | File | Status | Notes |
 |---|---|---|
-| `infra/terraform/main.tf` | 🔲 | Provider `aws ~> 5.90`, S3 backend |
-| `infra/terraform/variables.tf` | 🔲 | region, project_name, environment |
-| `infra/terraform/kms.tf` | 🔲 | Customer Managed Key |
-| `infra/terraform/s3.tf` | 🔲 | 4 buckets: bronze, silver, gold, vectors |
-| `infra/terraform/s3_vectors.tf` | 🔲 | S3 Vectors index (1536-dim, cosine) |
-| `infra/terraform/iam.tf` | 🔲 | SageMaker execution role, least-privilege |
-| `infra/terraform/secrets.tf` | 🔲 | Secrets Manager: `chitrakatha/synthetic_data_api_key` |
-| `infra/terraform/cloudwatch.tf` | 🔲 | Alarms: cold-start P99, error rate, 4xx/5xx |
-| `infra/terraform/outputs.tf` | 🔲 | All ARNs / bucket names exported |
+| `infra/terraform/main.tf` | ✅ Done | Provider `aws ~> 5.90`, S3 remote backend |
+| `infra/terraform/variables.tf` | ✅ Done | 12 typed+validated vars; no secrets or ARNs |
+| `infra/terraform/kms.tf` | ✅ Done | CMK, annual rotation, service principal policy (no circular dep) |
+| `infra/terraform/s3.tf` | ✅ Done | 4 buckets: versioning, KMS, public-access-block, lifecycle |
+| `infra/terraform/s3_vectors.tf` | ✅ Done | S3 Vectors index (1536-dim, cosine, KMS-encrypted) |
+| `infra/terraform/iam.tf` | ✅ Done | SageMaker + Lambda roles; 7 least-privilege inline policies |
+| `infra/terraform/secrets.tf` | ✅ Done | Secrets Manager secret with placeholder + `ignore_changes` |
+| `infra/terraform/cloudwatch.tf` | ✅ Done | 3 alarms + dashboard; `treat_missing_data=notBreaching` |
+| `infra/terraform/outputs.tf` | ✅ Done | 16 outputs: all ARNs, bucket names, dashboard URL |
 
 ---
 
