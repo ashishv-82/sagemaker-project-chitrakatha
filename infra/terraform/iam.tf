@@ -245,7 +245,7 @@ data "aws_iam_policy_document" "sagemaker_s3_vectors" {
       "s3vectors:QueryVectors",
       "s3vectors:ListVectors"
     ]
-    resources = [aws_s3_vectors_index.chitrakatha_rag.arn]
+    resources = [local.s3_vector_index_arn]
   }
 }
 

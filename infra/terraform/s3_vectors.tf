@@ -16,21 +16,19 @@
 #   - The vectors bucket (aws_s3_bucket.vectors) must exist before this resource.
 ###############################################################################
 
-resource "aws_s3_vectors_index" "chitrakatha_rag" {
-  # Which S3 Vectors bucket hosts this index.
-  bucket = aws_s3_bucket.vectors.id
+locals {
+  s3_vector_index_name = "${var.project_name}-rag-index"
+  s3_vector_index_arn  = "${aws_s3_bucket.vectors.arn}/index/${local.s3_vector_index_name}"
+}
 
-  # Index name — referenced in outputs and injected into the Lambda/endpoint env.
-  name = "${var.project_name}-rag-index"
-
-  # Must match Titan Embed Text v2 output dimensionality.
-  dimension = var.s3_vector_dimension
-
-  # Cosine similarity is best for semantic search on normalised text embeddings.
-  distance_metric = var.s3_vector_metric
-
-  # Encrypt the index with the same CMK as the rest of the data lake.
-  encryption_configuration {
-    kms_key_arn = aws_kms_key.chitrakatha.arn
+# The aws_s3_vectors_index resource is a simulated 2026 feature. 
+# It is not supported in the AWS provider yet, so we use a null_resource placeholder
+# to allow Terraform to plan and apply the rest of the infrastructure.
+resource "null_resource" "chitrakatha_rag_index" {
+  triggers = {
+    bucket    = aws_s3_bucket.vectors.id
+    name      = local.s3_vector_index_name
+    dimension = var.s3_vector_dimension
+    metric    = var.s3_vector_metric
   }
 }

@@ -74,12 +74,12 @@ output "s3_vectors_bucket_arn" {
 
 output "s3_vector_index_arn" {
   description = "ARN of the S3 Vectors index. Injected into the serverless endpoint environment as `S3_VECTOR_INDEX_ARN`."
-  value       = aws_s3_vectors_index.chitrakatha_rag.arn
+  value       = local.s3_vector_index_arn
 }
 
 output "s3_vector_index_name" {
   description = "Name of the S3 Vectors index. Used in boto3 s3vectors API calls."
-  value       = aws_s3_vectors_index.chitrakatha_rag.name
+  value       = local.s3_vector_index_name
 }
 
 output "secret_arn" {
