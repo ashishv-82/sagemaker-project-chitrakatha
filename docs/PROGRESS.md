@@ -66,7 +66,7 @@
 | `src/chitrakatha/ingestion/embedder.py` | 🔲 | Bedrock Titan Embed v2, batch 25 |
 | `src/chitrakatha/ingestion/vector_writer.py` | 🔲 | S3 Vectors writer |
 | `data/scripts/ingest_to_vectors.py` | 🔲 | Idempotent orchestration (Flow A) |
-| `data/scripts/synthesize_training_pairs.py` | 🔲 | Claude 3.5 Sonnet → bilingual Q&A (Flow B) |
+| `data/scripts/synthesize_training_pairs.py` | 🔲 | **RAFT**: Claude 3.5 Sonnet → golden + 2 distractors + CoT + bilingual answer |
 
 ---
 
@@ -76,11 +76,11 @@
 |---|---|---|
 | `pipeline/steps/preprocessing.py` | 🔲 | Bronze → Silver (corpus + training split) |
 | `pipeline/steps/embed_and_index.py` | 🔲 | Flow A: corpus → S3 Vectors |
-| `pipeline/steps/synthesize_pairs.py` | 🔲 | Flow B: chunks → Claude → Gold Q&A |
-| `pipeline/steps/train.py` | 🔲 | QLoRA, Spot, checkpointing, Experiments |
-| `pipeline/steps/evaluate.py` | 🔲 | ROUGE-L, BERTScore, cross-lingual test |
-| `pipeline/pipeline.py` | 🔲 | Full DAG (8 steps), ConditionStep on ROUGE-L ≥ 0.35 |
-| `pipeline/requirements.txt` | 🔲 | Training container deps |
+| `pipeline/steps/synthesize_pairs.py` | 🔲 | **RAFT**: chunks → Claude → Gold JSONL (golden + distractors + CoT) |
+| `pipeline/steps/train.py` | 🔲 | QLoRA + **RAFT prompt template** (shuffled docs), Spot, Experiments |
+| `pipeline/steps/evaluate.py` | 🔲 | 3 suites: factual accuracy, cross-lingual, **distractor robustness ≥ 0.70** |
+| `pipeline/pipeline.py` | 🔲 | Full DAG (8 steps), ConditionStep: ROUGE-L ≥ 0.35 **AND** distractor_robustness ≥ 0.70 |
+| `pipeline/requirements.txt` | 🔲 | Training container deps incl. `sentencepiece` (multilingual BERTScore) |
 
 ---
 

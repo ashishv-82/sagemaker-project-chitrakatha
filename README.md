@@ -58,7 +58,7 @@ flowchart TD
 | # | Model | Provider | Role | When |
 |---|---|---|---|---|
 | 1 | **Titan Embed Text v2** | Amazon Bedrock | Converts text → 1536-dim vectors | Ingestion + every query |
-| 2 | **Claude 3.5 Sonnet** | Amazon Bedrock | Teacher: auto-generates bilingual Q&A from corpus | Pipeline run only |
+| 2 | **Claude 3.5 Sonnet** | Amazon Bedrock | Teacher: auto-generates bilingual **RAFT training data** (Q + golden doc + distractors + chain-of-thought) | Pipeline run only |
 | 3 | **Llama 3.1 8B Instruct** | HuggingFace (base) | Student: fine-tuned with QLoRA on Gold Q&A | Training only |
 | 4 | **Fine-tuned Llama 3.1 8B** | SageMaker (yours) | Serves user queries with RAG grounding | Always (serverless) |
 
@@ -88,7 +88,7 @@ flowchart LR
 | **Vector Store** | Amazon S3 Vectors (2026) | Native serverless vector search — no DB needed |
 | **Embeddings** | Bedrock Titan Embed v2 | Serverless, 1536-dim, multilingual |
 | **Teacher Model** | Bedrock Claude 3.5 Sonnet | Auto-synthesises bilingual training data |
-| **Fine-tuning** | QLoRA (PEFT + TRL) on SageMaker | Efficient 4-bit tuning on Spot instances |
+| **Fine-tuning** | QLoRA (PEFT + TRL) on SageMaker | Efficient 4-bit tuning using **RAFT** on Spot instances |
 | **Serving** | SageMaker Serverless Inference | Zero cost when idle |
 | **Bridge** | AWS Lambda + API Gateway | Lightweight HTTP interface |
 | **IaC** | Terraform | Fully reproducible; outputs drive all config |
