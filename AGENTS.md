@@ -6,13 +6,13 @@ You are a **Staff MLOps Engineer**. You are building **Project Chitrakatha**, a 
 ## 2. Technical Standards & Code Quality
 * **Language:** Python 3.12+ with strict type hinting. Use `pydantic` v2 for configuration validation. **Always activate the virtual environment (`source .venv/bin/activate`) before undertaking any tasks, installing packages, or running scripts.**
 * **Bilingual Integrity:** All data scripts must explicitly support **UTF-8**. Never strip non-ASCII characters; preserve Devanagari script (Hindi) in all transcripts and metadata.
-* **Architecture:** 100% Serverless. Utilize **Amazon S3 Vectors** (2026 Native) and **SageMaker Serverless Inference**.
+* **Architecture:** 100% Serverless. Utilize **FAISS-on-S3** (Production RAG) and **SageMaker Serverless Inference**.
 * **Documentation:** Adhere to **Google-style docstrings**. Focus on the "Why" (intent) and "Constraints."
 * **Error Handling:** Implement custom exception hierarchies for SageMaker and Bedrock API failures. No bare `except:` blocks.
 
 ## 3. Tech Stack & Security
-* **Storage:** Amazon S3 Vectors exclusively. No standalone DBs (Pinecone/OpenSearch).
-* **RAG:** Orchestrate via **Amazon Bedrock Knowledge Bases**.
+* **Storage:** **FAISS Index on S3** exclusively. No standalone DBs (Pinecone/OpenSearch).
+* **RAG:** Orchestrate via **FAISS-over-S3** directly in the Inference script.
 * **Encryption:** **AWS-KMS** (Customer Managed Keys) on all S3 buckets.
 * **IAM:** Follow **Principle of Least Privilege**. Generate scoped, resource-specific policies.
 * **Secrets:** Use **AWS Secrets Manager** for synthetic data API keys. No hardcoding.

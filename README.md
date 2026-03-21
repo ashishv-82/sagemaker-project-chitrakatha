@@ -38,7 +38,7 @@ flowchart TD
     C -->|Flow A| D["embed_and_index.py<br/>Titan Embed v2"]
     C -->|Flow B| E["synthesize_pairs.py<br/>Claude 3.5 Sonnet"]
 
-    D --> F[("S3 Vectors<br/>RAG Index")]
+    D --> F[("S3 Vectors<br/>(FAISS Index)")]
     E --> G[("S3 Gold<br/>Q&A JSONL")]
 
     G -->|"QLoRA · Spot"| H["SageMaker Training<br/>Llama 3.1 8B"]
@@ -69,7 +69,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     S(["Drop raw file<br/>into S3 Bronze"]) --> P["SageMaker Pipeline<br/>triggered by CI/CD"]
-    P --> FA["🅐 Flow A<br/>clean → embed → S3 Vectors"]
+    P --> FA["🅐 Flow A<br/>clean → embed → FAISS-on-S3"]
     P --> FB["🅑 Flow B<br/>clean → Claude → Q&A → train"]
     FA & FB --> M[Model Registry]
     M -->|you approve| D["Serverless Endpoint<br/>auto-deployed"]
@@ -121,7 +121,7 @@ sagemaker-project-chitrakatha/
 ├── src/chitrakatha/             # Core Python library
 │   ├── config.py                # Pydantic v2 settings (no hardcoded values)
 │   ├── exceptions.py            # Custom exception hierarchy
-│   ├── ingestion/               # Chunker, embedder, vector writer
+│   ├── ingestion/               # Chunker, embedder, FAISS indexer
 │   └── monitoring/              # SageMaker Experiments & Lineage helpers
 ├── pipeline/
 │   ├── pipeline.py              # SageMaker Pipeline DAG definition

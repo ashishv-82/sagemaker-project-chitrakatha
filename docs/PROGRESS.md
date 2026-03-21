@@ -77,7 +77,7 @@
 |---|---|---|
 | `pipeline/steps/__init__.py` | ✅ Done | Package marker |
 | `pipeline/steps/preprocessing.py` | ✅ Done | Bronze→Silver: NFC norm, SHA-256 dedup, language detection, dual output |
-| `pipeline/steps/embed_and_index.py` | ✅ Done | Flow A step: corpus→S3 Vectors; idempotent; logs `vector_count_written` |
+| `pipeline/steps/embed_and_index.py` | ✅ Done | Flow A: corpus→FAISS-on-S3; idempotent; logs `vector_count_written` |
 | `pipeline/steps/synthesize_pairs.py` | ✅ Done | Flow B step: RAFT synthesis; logs `raft_pairs_generated` + Bedrock tokens |
 | `pipeline/steps/train.py` | ✅ Done | QLoRA 4-bit NF4; RAFT prompt with document shuffle; Spot training |
 | `pipeline/steps/evaluate.py` | ✅ Done | 3 suites: factual (ROUGE-L+BERTScore+EM), cross-lingual, distractor robustness |
@@ -91,7 +91,7 @@
 | File | Status | Notes |
 |---|---|---|
 | `serving/deploy_endpoint.py` | ✅ Done | ServerlessInferenceConfig (6144MB, max 5) |
-| `serving/inference.py` | ✅ Done | RAG predict_fn: embed → S3 Vectors → Llama |
+| `serving/inference.py` | ✅ Done | RAG predict_fn: embed → FAISS-on-S3 → Llama |
 | `serving/lambda/handler.py` | ✅ Done | Language-aware, pydantic validation |
 | `serving/lambda/requirements.txt` | ✅ Done | `boto3`, `pydantic>=2` |
 | `infra/terraform/lambda.tf` | ✅ Done | Lambda function + API Gateway HTTP API trigger |

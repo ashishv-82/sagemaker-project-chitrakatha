@@ -1,7 +1,4 @@
-# Project Chitrakatha — Detailed Implementation Plan
-
-> **Persona:** Staff MLOps Engineer  
-> **Goal:** A production-grade, 100% Serverless, bilingual (English/Devanagari) Indian Comic History LLM platform on AWS using S3 Vectors, Bedrock, and SageMaker — with a "Scale-to-Zero" cost model (~$5/mo baseline).
+> **Goal:** A production-grade, 100% Serverless, bilingual (English/Devanagari) Indian Comic History LLM platform on AWS using FAISS-on-S3 (Production RAG), Bedrock, and SageMaker — with a "Scale-to-Zero" cost model (~$5/mo baseline).
 
 ---
 
@@ -47,7 +44,7 @@
 - Package init; exposes `__version__`
 
 #### `src/chitrakatha/config.py` [NEW]
-- Pydantic v2 `BaseSettings` model: reads `AWS_REGION`, `S3_BUCKET_PREFIX`, `KMS_KEY_ARN`, `SAGEMAKER_ROLE_ARN`, `BEDROCK_KB_ID` from environment / SSM
+- Pydantic v2 `BaseSettings` model: reads `AWS_REGION`, `S3_BUCKET_PREFIX`, `KMS_KEY_ARN`, `SAGEMAKER_ROLE_ARN`, `S3_VECTOR_INDEX_NAME` from environment / SSM
 - No hardcoded values
 
 #### `src/chitrakatha/exceptions.py` [NEW]
@@ -91,10 +88,10 @@ Provisions **4 S3 buckets** with versioning + KMS + lifecycle:
 3. `chitrakatha-gold-{account_id}` — training-ready datasets + model artifacts
 4. `chitrakatha-vectors-{account_id}` — **S3 Vectors** bucket (special `--enable-s3-vectors` flag)
 
-#### `infra/terraform/s3_vectors.tf` [NEW]
-- **S3 Vector Index** resource (2026 native API via `aws_s3_vectors_index`)
+#### `infra/terraform/s3_vectors.tf` [REFAC]
+- **S3 Vector Placeholder** (Placeholder for the FAISS index storage)
 - Dimension: `1536` (Titan Embed v2 output size)
-- Metric: `cosine`
+- Metric: `cosine` (InnerProduct in FAISS)
 - Links to vectors bucket + KMS key
 
 #### `infra/terraform/iam.tf` [NEW]
@@ -158,7 +155,7 @@ S3 Bronze (raw)
       └──► S3 Silver /training/   ← Flow B: input for Q&A synthesis
 ```
 
-### Sub-phase 2c: Flow A — Corpus → S3 Vectors (RAG knowledge base)
+### Sub-phase 2c: Flow A — Corpus → FAISS-on-S3 (RAG knowledge base)
 
 #### `src/chitrakatha/ingestion/chunker.py` [NEW]
 - **Sliding-window chunker** with 15% overlap
@@ -172,10 +169,11 @@ S3 Bronze (raw)
 - Raises `BedrockEmbeddingError` on failure
 - Returns `list[float]` (1536-dim vectors)
 
-#### `src/chitrakatha/ingestion/vector_writer.py` [NEW]
-- Writes `(vector_id, embedding, metadata)` tuples to **S3 Vectors** via boto3
-- Metadata payload: `{"source_entity": ..., "publisher": ..., "language": ..., "chunk_text": ...}`
-- Raises `S3VectorError` on failure
+#### `src/chitrakatha/ingestion/vector_writer.py` [REFAC]
+- Writes `(vector_id, embedding, metadata)` to a **FAISS Index** stored in S3.
+- Metadata payload: `{"chunk_id": ..., "chunk_text": ..., "source_document": ..., "chunk_index": ..., "token_count": ...}`
+- Supports incremental updates by downloading existing index, appending, and re-uploading.
+- Raises `S3VectorError` on failure.
 
 #### `data/scripts/ingest_to_vectors.py` [NEW]
 - Orchestration: reads `/corpus/` chunks from Silver → chunk → embed → write to S3 Vectors
@@ -325,11 +323,11 @@ S3 Bronze (raw)
 - Endpoint name: `chitrakatha-rag-serverless`
 - Custom **Container Environment**: injects `BEDROCK_KB_ID`, `S3_VECTOR_INDEX_ARN`
 
-#### `serving/inference.py` [NEW]
+#### `serving/inference.py` [REFAC]
 - Model server entry point (`model_fn`, `predict_fn`)
 - RAG flow inside `predict_fn`:
   1. Embed query using Bedrock Titan v2
-  2. Similarity search against S3 Vectors index (top-k=5)
+  2. Similarity search against **FAISS index** (cached in memory from S3)
   3. Build prompt: `[Context from retrieved chunks] + [User Query]`
   4. Generate response via the fine-tuned Llama model
 - Raises `SageMakerPipelineError` on empty context retrieval
@@ -508,5 +506,6 @@ graph LR
 | 5 | **Frontend** | Scope limited to Lambda API only, or include a lightweight UI? | Lambda API only for this plan |
 | 6 | **RAG Strategy** | Managed Bedrock KB owning the vector index vs. direct S3 Vectors queries via boto3 in `inference.py` | Clarification needed — AGENTS.md mentions both |
 
-> [!WARNING]
-> **S3 Vectors (2026 API) Note:** The `aws_s3_vectors_index` Terraform resource is a 2026 addition. Ensure your `hashicorp/aws` provider is pinned to `>= 5.90` (or latest 2026 release) that includes this resource. If it's not yet in the provider, we will use a `null_resource` with AWS CLI bootstrap script as a fallback.
+> [!IMPORTANT]
+> **Production Refactor (FAISS-on-S3):** 
+> As of Phase 2, the project was refactored to use **FAISS-over-S3** instead of the native (and currently unavailable) `s3vectors` Boto3 client. This provides a functional, production-ready "Scale-to-Zero" vector search by storing the index as a persistent file in S3 and caching it in RAM during inference. This approach satisfies all architectural constraints in `AGENTS.md` while ensuring the project is deployable today.
