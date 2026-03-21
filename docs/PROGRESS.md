@@ -11,7 +11,7 @@
 |---|---|---|
 | **Phase 0** | Repo scaffold & governance | ✅ Complete |
 | **Phase 1** | Terraform IaC | ✅ Complete |
-| **Phase 2** | Data layer & ingestion | 🔲 Not started |
+| **Phase 2** | Data layer & ingestion | ✅ Complete |
 | **Phase 3** | SageMaker MLOps pipeline | 🔲 Not started |
 | **Phase 4** | Serving & Lambda bridge | 🔲 Not started |
 | **Phase 5** | Observability & lineage | 🔲 Not started |
@@ -57,16 +57,17 @@
 
 ---
 
-## Phase 2 — Data Layer & Ingestion 🔲
+## Phase 2 — Data Layer & Ingestion ✅
 
 | File | Status | Notes |
 |---|---|---|
-| `data/scripts/upload_to_bronze.py` | 🔲 | UTF-8 validated upload; MD5 checksum in metadata |
-| `src/chitrakatha/ingestion/chunker.py` | 🔲 | Sliding-window, 15% overlap, Devanagari-safe |
-| `src/chitrakatha/ingestion/embedder.py` | 🔲 | Bedrock Titan Embed v2, batch 25 |
-| `src/chitrakatha/ingestion/vector_writer.py` | 🔲 | S3 Vectors writer |
-| `data/scripts/ingest_to_vectors.py` | 🔲 | Idempotent orchestration (Flow A) |
-| `data/scripts/synthesize_training_pairs.py` | 🔲 | **RAFT**: Claude 3.5 Sonnet → golden + 2 distractors + CoT + bilingual answer |
+| `data/scripts/upload_to_bronze.py` | ✅ Done | UTF-8 validated; .txt/.md/.vtt/.xlsx; MD5 checksum in S3 metadata |
+| `src/chitrakatha/ingestion/__init__.py` | ✅ Done | Package marker |
+| `src/chitrakatha/ingestion/chunker.py` | ✅ Done | Sliding-window 15% overlap, NFC normalization, Devanagari-safe |
+| `src/chitrakatha/ingestion/embedder.py` | ✅ Done | Titan Embed v2, batch 25, 3× retry with exponential backoff |
+| `src/chitrakatha/ingestion/vector_writer.py` | ✅ Done | Idempotent batch writes (100/call), query_vectors() for inference |
+| `data/scripts/ingest_to_vectors.py` | ✅ Done | Flow A orchestration: Silver /corpus/ → S3 Vectors |
+| `data/scripts/synthesize_training_pairs.py` | ✅ Done | Flow B RAFT: golden + 2 distractors + CoT → Gold JSONL |
 
 ---
 
@@ -116,13 +117,10 @@
 
 ---
 
-## Unit Tests 🔲
+## Unit Tests (Phase 2) ✅
 
-| File | Status |
-|---|---|
-| `tests/unit/test_chunker.py` | 🔲 |
-| `tests/unit/test_embedder.py` | 🔲 |
-| `tests/unit/test_preprocessor.py` | 🔲 |
-| `tests/unit/test_vector_writer.py` | 🔲 |
-| `tests/unit/test_lambda_handler.py` | 🔲 |
-| `tests/integration/test_pipeline_dag.py` | 🔲 |
+| File | Status | Notes |
+|---|---|---|
+| `tests/unit/test_chunker.py` | ✅ Done | 10 tests: basic, Devanagari, overlap, typed output, error cases |
+| `tests/unit/test_embedder.py` | ✅ Done | 9 tests: batching, dim check, retry, Devanagari passthrough |
+| `tests/unit/test_vector_writer.py` | ✅ Done | 8 tests: idempotency, metadata, batch split, error propagation |
