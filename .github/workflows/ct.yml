@@ -60,5 +60,9 @@ jobs:
         env:
           AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-2' }}
         run: |
+          echo "Debugging Python environment..."
+          python -c "import sys; print('Sys Path:', sys.path)"
+          python -c "import sagemaker; print('SageMaker path:', sagemaker.__file__)"
+          pip list
           echo "Starting Chitrakatha Training Pipeline for $BRONZE_BUCKET..."
           python pipeline/pipeline.py --execute
