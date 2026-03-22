@@ -1,6 +1,6 @@
 # Project Chitrakatha — Progress Tracker
 
-> Last updated: 2026-03-21  
+> Last updated: 2026-03-22
 > Reference: [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)
 
 ---
@@ -147,3 +147,12 @@
 | inference.py GPU/CPU branch | `serving/inference.py` | GPU path: 4-bit NF4 quantization (~4 GB VRAM); CPU path: bfloat16 with OOM warning (8B model needs real-time GPU endpoint in production) |
 | Eval processor instance fix | `pipeline/pipeline.py` | Changed `eval_processor` from `ml.m5.2xlarge` (CPU, hours) to `ml.g5.2xlarge` (GPU, ~20 min) since evaluate.py loads full 8B model |
 | Embed/synthesize processor image fix | `pipeline/pipeline.py` | Changed `embed_processor` from GPU Docker image to CPU image — Flow A/B only call Bedrock APIs, no local GPU needed |
+| Remove `source_dir` entirely — S3+ProcessingInput pattern | `pipeline/pipeline.py` | Neither `ScriptProcessor` nor `FrameworkProcessor` subclasses reliably propagate `source_dir` through `@runnable_by_pipeline` replay in SDK ≥2.200. Fix: `_sync_chitrakatha_to_s3()` uploads `src/chitrakatha/` to Silver bucket once in `main()`; each step mounts it via `chitrakatha_input` (`ProcessingInput`); `PYTHONPATH=/opt/ml/processing/input/src` set in `_CONTAINER_ENV`. Step scripts passed as absolute paths: `code=str(STEPS_DIR / "script.py")`. |
+| KMS GenerateDataKey for GitHub Actions | `infra/terraform/github_oidc.tf` | `_sync_chitrakatha_to_s3()` writes to KMS-encrypted Silver bucket; GitHub Actions role lacked `kms:GenerateDataKey`. Added `KMSEncryptDecryptForS3Uploads` statement scoped to the project CMK ARN. |
+| sagemaker:AddTags + CreatePipeline for GitHub Actions | `infra/terraform/github_oidc.tf` | `pipeline.upsert()` calls `CreatePipeline` (first run) and tags it — both require `AddTags` on the pipeline resource. Added `CreatePipeline`, `UpdatePipeline`, `AddTags` to GitHub Actions SageMaker statement. |
+| sagemaker:ListTags for GitHub Actions | `infra/terraform/github_oidc.tf` | On subsequent runs `pipeline.upsert()` takes the update path which calls `list_tags` before merging tags. Added `sagemaker:ListTags` to GitHub Actions role. |
+| sagemaker:AddTags + pipelines-* resource scope for execution role | `infra/terraform/iam.tf` | Pipeline orchestrator auto-tags every ProcessingJob/TrainingJob it creates. Job names follow `pipelines-<execid>-<StepName>-<hash>` pattern, not `chitrakatha-*`. Added `sagemaker:AddTags` and second resource ARN pattern `arn:aws:sagemaker:…:*/pipelines-*`. |
+| SageMaker Studio domain with VPC and idle shutdown | `infra/terraform/studio.tf`, `infra/terraform/networking.tf`, `infra/terraform/variables.tf`, `infra/terraform/outputs.tf` | Added Studio domain (`d-f1cgtrww1eln`) with IAM auth, default user profile, and 60-min JupyterLab idle timeout. No default VPC existed — created minimal VPC with two public subnets and internet gateway. |
+| Replace piecemeal Studio/control-plane policies with AmazonSageMakerFullAccess | `infra/terraform/iam.tf` | Eliminated drip-feed of individual Studio permissions (`DescribeDomain`, `DescribeUserProfile`, `ListSpaces`, etc.) by attaching the AWS managed `AmazonSageMakerFullAccess` policy. Removed the hand-rolled `sagemaker_control_plane` and `sagemaker_studio` inline policies. |
+| iam:PassRole self-pass for pipeline-spawned jobs | `infra/terraform/iam.tf` | When the pipeline orchestrator creates a ProcessingJob/TrainingJob it must pass the execution role to the child job. Added `iam:PassRole` on the role's own ARN, conditioned on `iam:PassedToService = sagemaker.amazonaws.com`. |
+| Install pydantic, pydantic-settings, faiss-cpu, numpy in processing containers | `pipeline/steps/preprocessing.py`, `pipeline/steps/embed_and_index.py`, `pipeline/steps/synthesize_pairs.py` | SKLearnProcessor and ScriptProcessor base containers do not pre-install these packages. Added `subprocess.check_call` pip install block at top of each step (before chitrakatha imports). PyTorch GPU container used by evaluate.py already bundles the heavy ML packages. |
