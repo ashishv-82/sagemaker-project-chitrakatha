@@ -65,7 +65,7 @@ OUTPUT_EVAL_DIR = OUTPUT_GOLD_DIR / "eval"
 # Fraction of synthesised pairs held out for evaluation (not seen during training).
 _EVAL_SPLIT: Final[float] = 0.10
 
-_CLAUDE_MODEL_ID: Final[str] = "anthropic.claude-haiku-4-5-20251001-v1:0"
+_CLAUDE_MODEL_ID: Final[str] = "ap.anthropic.claude-haiku-4-5-20251001-v1:0"
 _QA_PAIRS_PER_CHUNK: Final[int] = 3
 _NUM_DISTRACTORS: Final[int] = 2
 _MAX_RETRIES: Final[int] = 3
