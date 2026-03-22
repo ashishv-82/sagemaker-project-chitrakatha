@@ -46,7 +46,7 @@ from pathlib import Path
 
 import sagemaker
 from sagemaker.model import Model
-from sagemaker.pytorch import PyTorchEstimator
+from sagemaker.pytorch import PyTorch
 from sagemaker.processing import ProcessingInput, ProcessingOutput, ScriptProcessor
 from sagemaker.sklearn.processing import SKLearnProcessor
 from sagemaker.workflow.condition_step import ConditionStep
@@ -308,7 +308,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     # The HF token is read from Secrets Manager inside train.py at runtime.
     ###########################################################################
 
-    pytorch_estimator = PyTorchEstimator(
+    pytorch_estimator = PyTorch(
         entry_point="train.py",
         source_dir=_make_training_source_dir(),
         role=ROLE_ARN,
