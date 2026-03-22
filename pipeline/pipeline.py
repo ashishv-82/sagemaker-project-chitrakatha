@@ -25,8 +25,9 @@ Pipeline parameters (overridable per execution):
     ModelApprovalStatus — default: PendingManualApproval
 
 Base model:
-    meta-textgeneration-llama-3-2-3b-instruct (SageMaker JumpStart)
-    Weights fetched from AWS-managed S3 — no HuggingFace token required.
+    meta-llama/Llama-3.2-3B-Instruct (HuggingFace Hub)
+    Token read from Secrets Manager (chitrakatha/huggingface_token) at training time.
+    JumpStart does not support Llama 3.2 fine-tuning in ap-southeast-2.
 
 Constraints:
     - All ARNs and bucket names from environment (Terraform outputs) — no hardcoding.
@@ -44,9 +45,8 @@ import tempfile
 from pathlib import Path
 
 import sagemaker
-from sagemaker import model_uris
-from sagemaker.jumpstart.estimator import JumpStartEstimator
 from sagemaker.model import Model
+from sagemaker.pytorch import PyTorchEstimator
 from sagemaker.processing import ProcessingInput, ProcessingOutput, ScriptProcessor
 from sagemaker.sklearn.processing import SKLearnProcessor
 from sagemaker.workflow.condition_step import ConditionStep
@@ -72,12 +72,6 @@ VECTORS_BUCKET = os.environ["VECTORS_BUCKET"]
 FAISS_INDEX_PREFIX = os.environ.get("FAISS_INDEX_PREFIX", "faiss-index")
 
 PIPELINE_NAME = "chitrakatha-mlops-pipeline"
-
-# SageMaker JumpStart model ID — weights are fetched from AWS-managed S3,
-# no HuggingFace account or token required.
-# Llama 3.2 3B: fits on ml.g4dn.xlarge (16 GB VRAM) in 4-bit (~2.5 GB),
-# and serves via a real-time GPU endpoint with App Auto Scaling (scale-to-zero).
-JUMPSTART_MODEL_ID = "meta-textgeneration-llama-3-2-3b-instruct"
 
 # Source directory for pipeline step scripts (relative to this file).
 STEPS_DIR = Path(__file__).parent / "steps"
@@ -129,17 +123,20 @@ def _sync_chitrakatha_to_s3() -> str:
 
 
 def _make_training_source_dir() -> str:
-    """Bundle all pipeline/steps files with the chitrakatha package.
+    """Bundle train.py, requirements.txt, and the chitrakatha package.
 
-    Unlike ``_make_processing_source_dir`` (which handles one script at a time),
-    the training container needs the full steps directory (requirements.txt,
-    train.py, etc.) plus chitrakatha so that ``from chitrakatha.monitoring...``
-    resolves inside the training job.
+    The PyTorchEstimator installs packages from requirements.txt automatically
+    if it is present in source_dir. requirements.txt lives in pipeline/ (not
+    pipeline/steps/), so it must be explicitly copied into the temp dir.
     """
     tmp = Path(tempfile.mkdtemp(prefix="chitrakatha_train_"))
     for item in STEPS_DIR.iterdir():
         if item.is_file():
             shutil.copy2(item, tmp / item.name)
+    # Copy pipeline/requirements.txt so SageMaker installs training dependencies.
+    reqs = Path(__file__).parent / "requirements.txt"
+    if reqs.exists():
+        shutil.copy2(reqs, tmp / "requirements.txt")
     shutil.copytree(ROOT_DIR / "src" / "chitrakatha", tmp / "chitrakatha")
     return str(tmp)
 
@@ -305,30 +302,22 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     )
 
     ###########################################################################
-    # Step 3: Training — QLoRA + RAFT (Spot instance)
+    # Step 3: Training — QLoRA + RAFT
+    # Uses PyTorchEstimator (HuggingFace Hub) instead of JumpStartEstimator
+    # because JumpStart does not support Llama 3.2 fine-tuning in ap-southeast-2.
+    # The HF token is read from Secrets Manager inside train.py at runtime.
     ###########################################################################
 
-    # Retrieve the S3 URI for the JumpStart pre-trained model weights.
-    # JumpStart only auto-delivers weights to SM_CHANNEL_MODEL when using its
-    # built-in training scripts. With a custom entry_point (train.py), we must
-    # pass the weights explicitly as a "model" training input channel.
-    jumpstart_model_uri = model_uris.retrieve(
-        model_id=JUMPSTART_MODEL_ID,
-        model_version="*",
-        model_scope="training",
-        sagemaker_session=sm_session,
-    )
-    logger.info("JumpStart model URI: %s", jumpstart_model_uri)
-
-    jumpstart_estimator = JumpStartEstimator(
-        model_id=JUMPSTART_MODEL_ID,
+    pytorch_estimator = PyTorchEstimator(
         entry_point="train.py",
         source_dir=_make_training_source_dir(),
         role=ROLE_ARN,
+        framework_version="2.1.0",
+        py_version="py310",
         instance_type="ml.g4dn.xlarge",
         instance_count=1,
         use_spot_instances=False,
-        max_run=7200,    # 2 hours max actual training time.
+        max_run=7200,
         checkpoint_s3_uri=f"s3://{GOLD_BUCKET}/checkpoints/",
         hyperparameters={
             "EPOCHS": "3",
@@ -339,7 +328,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         },
         environment={
             "SAGEMAKER_EXPERIMENT_RUN": "chitrakatha-pipeline-run",
-            "accept_eula": "true",
+            "HF_TOKEN_SECRET_NAME": "chitrakatha/huggingface_token",
         },
         output_path=f"s3://{GOLD_BUCKET}/model-artifacts/",
         sagemaker_session=sm_session,
@@ -348,18 +337,11 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_train = TrainingStep(
         name="TrainQLoRARAFT",
-        estimator=jumpstart_estimator,
+        estimator=pytorch_estimator,
         inputs={
             "training": sagemaker.inputs.TrainingInput(
                 s3_data=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold_train"].S3Output.S3Uri,
                 content_type="application/x-ndjson",
-            ),
-            # Explicit model channel delivers JumpStart weights to SM_CHANNEL_MODEL
-            # so train.py loads from AWS-managed S3 without HuggingFace Hub access.
-            "model": sagemaker.inputs.TrainingInput(
-                s3_data=jumpstart_model_uri,
-                content_type="application/x-tar",
-                s3_data_type="S3Prefix",
             ),
         },
         depends_on=[step_embed, step_synthesize],

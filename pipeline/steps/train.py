@@ -39,7 +39,9 @@ import os
 import random
 from pathlib import Path
 
+import boto3
 import torch
+from botocore.exceptions import BotoCoreError, ClientError
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
@@ -70,10 +72,26 @@ LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "2e-4"))
 MAX_SEQ_LENGTH = int(os.environ.get("MAX_SEQ_LENGTH", "2048"))
 EVAL_SPLIT = float(os.environ.get("EVAL_SPLIT", "0.10"))
 EXPERIMENT_RUN = os.environ.get("SAGEMAKER_EXPERIMENT_RUN", "")
+HF_TOKEN_SECRET_NAME = os.environ.get("HF_TOKEN_SECRET_NAME", "chitrakatha/huggingface_token")
 
-# SageMaker JumpStart places the pre-downloaded base model weights here.
-# This eliminates any dependency on HuggingFace Hub or credentials at training time.
-SM_CHANNEL_MODEL = Path(os.environ.get("SM_CHANNEL_MODEL", "/opt/ml/input/data/model"))
+
+def _get_hf_token() -> str:
+    """Read the HuggingFace access token from AWS Secrets Manager.
+
+    Returns:
+        HuggingFace token string.
+
+    Raises:
+        RuntimeError: If the secret cannot be retrieved.
+    """
+    region = os.environ.get("AWS_REGION", "ap-southeast-2")
+    client = boto3.client("secretsmanager", region_name=region)
+    try:
+        response = client.get_secret_value(SecretId=HF_TOKEN_SECRET_NAME)
+        secret = json.loads(response["SecretString"])
+        return secret["token"]
+    except (BotoCoreError, ClientError, KeyError) as exc:
+        raise RuntimeError(f"Cannot retrieve HuggingFace token from '{HF_TOKEN_SECRET_NAME}': {exc}") from exc
 
 
 def _build_raft_prompt(record: dict) -> str:
@@ -167,33 +185,28 @@ def main() -> None:
     if EXPERIMENT_RUN:
         log_hyperparameters(run_name=EXPERIMENT_RUN, hyperparameters=hparams)
 
-    # 4-bit NF4 quantization — enables 8B model on 24GB VRAM.
+    # 4-bit NF4 quantization — fits Llama 3.2 3B on ml.g4dn.xlarge (16 GB VRAM).
+    # g4dn uses NVIDIA T4 which does not support bfloat16 natively; use float16.
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=torch.float16,
         bnb_4bit_use_double_quant=True,
     )
 
-    # Prefer JumpStart-supplied weights (SM_CHANNEL_MODEL) over downloading from Hub.
-    # JumpStart places the base model artifact at SM_CHANNEL_MODEL when the pipeline
-    # passes the model S3 URI as a training input channel — no external network calls.
-    if SM_CHANNEL_MODEL.exists() and any(SM_CHANNEL_MODEL.iterdir()):
-        model_source = str(SM_CHANNEL_MODEL)
-        logger.info("Loading base model from JumpStart channel: %s", model_source)
-    else:
-        model_source = MODEL_ID
-        logger.info("SM_CHANNEL_MODEL empty; falling back to HuggingFace Hub: %s", model_source)
+    hf_token = _get_hf_token()
+    logger.info("Downloading base model from HuggingFace Hub: %s", MODEL_ID)
 
     model = AutoModelForCausalLM.from_pretrained(
-        model_source,
+        MODEL_ID,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=False,
+        token=hf_token,
     )
     model = prepare_model_for_kbit_training(model)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_source, trust_remote_code=False)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=False, token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
@@ -220,8 +233,8 @@ def main() -> None:
         learning_rate=LEARNING_RATE,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
-        fp16=False,
-        bf16=True,
+        fp16=True,   # T4 GPU (g4dn) supports fp16 but not bfloat16.
+        bf16=False,
         evaluation_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
