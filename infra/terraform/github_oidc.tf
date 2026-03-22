@@ -184,6 +184,21 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       values   = ["sagemaker.application-autoscaling.amazonaws.com"]
     }
   }
+
+  # pipeline.py calls model_uris.retrieve() to fetch JumpStart model metadata.
+  # The SageMaker SDK reads this from an AWS-managed public S3 bucket
+  # (jumpstart-cache-prod-{region}). Without this grant the pipeline definition
+  # step fails with AccessDenied even though the bucket is AWS-owned.
+  statement {
+    sid    = "JumpStartModelCacheRead"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+    ]
+    resources = [
+      "arn:aws:s3:::jumpstart-cache-prod-${var.aws_region}/*",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "github_actions_policy" {
