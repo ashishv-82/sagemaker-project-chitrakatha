@@ -100,7 +100,7 @@ The real-time endpoint uses App Auto Scaling with `MinCapacity=0`. When no reque
 1. **Target tracking on `SageMakerVariantInvocationsPerInstance`**: Scale in/out based on throughput
 2. **Step scaling on `HasBacklogWithoutCapacity`**: Wake the endpoint when a request arrives with no instances running (cold start)
 
-Cold start takes ~3–5 minutes (JumpStart model download + container init). The Lambda handler detects cold-start by catching `ModelNotReadyException` and returns HTTP 503 with `Retry-After: 300` so the client knows to retry.
+Cold start takes ~3–5 minutes (SageMaker downloads the merged model artifact from S3 Gold bucket + container init + loading weights into GPU VRAM). The Lambda handler detects cold-start by catching `ModelNotReadyException` and immediately returns HTTP 503 with `Retry-After: 300` — the user is not kept waiting; they receive an instant error response instructing them to retry in 5 minutes.
 
 ---
 
