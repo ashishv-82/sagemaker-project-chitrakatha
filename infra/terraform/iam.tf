@@ -117,6 +117,20 @@ data "aws_iam_policy_document" "sagemaker_bedrock" {
       "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
     ]
   }
+
+  # Claude 3.5 Sonnet v2 is distributed via AWS Marketplace. The execution role
+  # needs ViewSubscriptions + Subscribe to complete the per-role marketplace
+  # activation even after the account-level subscription has been approved.
+  statement {
+    sid    = "BedrockMarketplaceSubscription"
+    effect = "Allow"
+    actions = [
+      "aws-marketplace:ViewSubscriptions",
+      "aws-marketplace:Subscribe",
+      "aws-marketplace:Unsubscribe",
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_role_policy" "sagemaker_bedrock" {
