@@ -194,8 +194,7 @@ def run(settings: Settings, experiment_run_name: str | None = None) -> int:
                 "answer_en": pair.get("answer_en", ""),
                 "answer_hi": pair.get("answer_hi", ""),
                 "source_chunk_id": golden.get("chunk_id", ""),
-                "source_entity": golden_entity,
-                "publisher": golden_publisher,
+                "source_document": golden_doc,
                 "language_pair": "en-hi",
             }
             output_lines.append(json.dumps(record, ensure_ascii=False))

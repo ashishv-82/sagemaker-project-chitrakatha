@@ -47,8 +47,7 @@ import sagemaker
 from sagemaker import model_uris
 from sagemaker.jumpstart.estimator import JumpStartEstimator
 from sagemaker.model import Model
-from sagemaker.processing import ProcessingInput, ProcessingOutput
-from sagemaker.pytorch import PyTorchProcessor
+from sagemaker.processing import ProcessingInput, ProcessingOutput, ScriptProcessor
 from sagemaker.sklearn.processing import SKLearnProcessor
 from sagemaker.workflow.condition_step import ConditionStep
 from sagemaker.workflow.conditions import ConditionGreaterThanOrEqualTo
@@ -84,6 +83,12 @@ JUMPSTART_MODEL_ID = "meta-textgeneration-llama-3-2-3b-instruct"
 STEPS_DIR = Path(__file__).parent / "steps"
 ROOT_DIR = Path(__file__).parent.parent
 
+# S3 prefix within SILVER_BUCKET where the chitrakatha package is published so
+# processing containers can import it via PYTHONPATH (source_dir is unsupported
+# by ScriptProcessor.run(); FrameworkProcessor subclasses also fail to propagate
+# it through the @runnable_by_pipeline replay in newer SDK versions).
+PIPELINE_ASSETS_PREFIX = "pipeline-assets"
+
 # Resource tags applied to every SageMaker resource created by this pipeline.
 RESOURCE_TAGS = [
     {"Key": "Project", "Value": "Chitrakatha"},
@@ -91,32 +96,36 @@ RESOURCE_TAGS = [
 ]
 
 
-def _make_processing_source_dir(step_script: Path) -> str:
-    """Bundle a step script with the chitrakatha package into a temp directory.
+def _sync_chitrakatha_to_s3() -> str:
+    """Upload the chitrakatha source package to S3 for use in processing containers.
 
-    SageMaker uploads the entire source_dir to S3 and sets it as the working
-    directory inside the processing container, so ``import chitrakatha`` resolves
-    without requiring a custom Docker image or a pip-install shell command.
-
-    If a companion ``<stem>_requirements.txt`` exists alongside the step script,
-    it is copied into the temp dir as ``requirements.txt`` so the processor can
-    install extra packages (e.g. openpyxl for the sklearn preprocessing container).
-
-    Args:
-        step_script: Absolute path to the pipeline step .py file.
+    ``source_dir`` in ``FrameworkProcessor.run()`` / ``ScriptProcessor.run()``
+    is not reliably supported across SageMaker SDK versions in the
+    ``@runnable_by_pipeline`` replay phase.  Instead we upload the package
+    once per pipeline run and mount it as a ``ProcessingInput`` at
+    ``/opt/ml/processing/input/src``, then set
+    ``PYTHONPATH=/opt/ml/processing/input/src`` so ``import chitrakatha`` works.
 
     Returns:
-        Path string of the temp directory. SageMaker uploads it during
-        ``pipeline.upsert()``, so it must exist until that call returns.
+        S3 URI of the parent src/ directory
+        (e.g. ``s3://<bucket>/pipeline-assets/src/``).
     """
-    tmp = Path(tempfile.mkdtemp(prefix="chitrakatha_proc_"))
-    shutil.copy2(step_script, tmp / step_script.name)
-    shutil.copytree(ROOT_DIR / "src" / "chitrakatha", tmp / "chitrakatha")
-    # Copy companion requirements.txt if present (e.g. preprocessing_requirements.txt).
-    companion_reqs = step_script.parent / f"{step_script.stem}_requirements.txt"
-    if companion_reqs.exists():
-        shutil.copy2(companion_reqs, tmp / "requirements.txt")
-    return str(tmp)
+    import boto3 as _boto3
+
+    s3_client = _boto3.client("s3", region_name=AWS_REGION)
+    src_dir = ROOT_DIR / "src"
+    chitrakatha_dir = src_dir / "chitrakatha"
+    s3_prefix = f"{PIPELINE_ASSETS_PREFIX}/src"
+
+    for file_path in chitrakatha_dir.rglob("*"):
+        if file_path.is_file() and "__pycache__" not in str(file_path):
+            relative = file_path.relative_to(src_dir)
+            key = f"{s3_prefix}/{relative}"
+            s3_client.upload_file(str(file_path), SILVER_BUCKET, key)
+
+    s3_uri = f"s3://{SILVER_BUCKET}/{s3_prefix}/"
+    logger.info("Synced chitrakatha package to %s", s3_uri)
+    return s3_uri
 
 
 def _make_training_source_dir() -> str:
@@ -148,6 +157,8 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     # Injected into every processing container so Settings() can resolve all
     # required fields without hitting the environment of the calling machine.
+    # PYTHONPATH points to the mounted chitrakatha package (uploaded to S3 by
+    # _sync_chitrakatha_to_s3() in main() and mounted via ProcessingInput).
     _CONTAINER_ENV: dict[str, str] = {
         "S3_BRONZE_BUCKET": BRONZE_BUCKET,
         "S3_SILVER_BUCKET": SILVER_BUCKET,
@@ -157,6 +168,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         "KMS_KEY_ARN": KMS_KEY_ARN,
         "SAGEMAKER_ROLE_ARN": ROLE_ARN,
         "AWS_REGION": AWS_REGION,
+        "PYTHONPATH": "/opt/ml/processing/input/src",
     }
 
     ###########################################################################
@@ -186,18 +198,29 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         env=_CONTAINER_ENV,
     )
 
+    # chitrakatha package is uploaded to S3 by _sync_chitrakatha_to_s3() before
+    # create_pipeline() is called. Every processing step mounts it at
+    # /opt/ml/processing/input/src so that `import chitrakatha` resolves via
+    # PYTHONPATH (set in _CONTAINER_ENV above). This avoids source_dir which is
+    # not reliably supported by ScriptProcessor/FrameworkProcessor.run() during
+    # the @runnable_by_pipeline replay phase in SageMaker SDK >= 2.200.
+    chitrakatha_input = ProcessingInput(
+        source=f"s3://{SILVER_BUCKET}/{PIPELINE_ASSETS_PREFIX}/src/",
+        destination="/opt/ml/processing/input/src",
+        input_name="chitrakatha-src",
+    )
+
     step_preprocessing = ProcessingStep(
         name="Preprocessing",
         step_args=sklearn_processor.run(
-            code="preprocessing.py",
-            source_dir=_make_processing_source_dir(STEPS_DIR / "preprocessing.py"),
-            requirements="requirements.txt",
+            code=str(STEPS_DIR / "preprocessing.py"),
             inputs=[
                 ProcessingInput(
                     source=input_data_uri,
                     destination="/opt/ml/processing/input/bronze",
                     input_name="bronze",
-                )
+                ),
+                chitrakatha_input,
             ],
             outputs=[
                 ProcessingOutput(
@@ -220,15 +243,14 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     ###########################################################################
 
     # CPU image: Flow A/B only call Bedrock APIs — no GPU computation required.
-    # PyTorchProcessor (FrameworkProcessor subclass) is used instead of ScriptProcessor
-    # because it supports source_dir in run(), which ScriptProcessor does not.
-    embed_processor = PyTorchProcessor(
-        framework_version="2.1.0",
-        py_version="py310",
+    # ScriptProcessor is used (not FrameworkProcessor subclass) because source_dir
+    # is avoided — chitrakatha is mounted via ProcessingInput + PYTHONPATH instead.
+    embed_processor = ScriptProcessor(
         role=ROLE_ARN,
         image_uri=f"763104351884.dkr.ecr.{AWS_REGION}.amazonaws.com/pytorch-training:2.1.0-cpu-py310-ubuntu20.04-sagemaker",
         instance_type="ml.m5.2xlarge",
         instance_count=1,
+        command=["python3"],
         sagemaker_session=sm_session,
         tags=RESOURCE_TAGS,
         env={**_CONTAINER_ENV, "SAGEMAKER_EXPERIMENT_RUN": "chitrakatha-pipeline-run"},
@@ -237,14 +259,14 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     step_embed = ProcessingStep(
         name="EmbedAndIndex",
         step_args=embed_processor.run(
-            code="embed_and_index.py",
-            source_dir=_make_processing_source_dir(STEPS_DIR / "embed_and_index.py"),
+            code=str(STEPS_DIR / "embed_and_index.py"),
             inputs=[
                 ProcessingInput(
                     source=step_preprocessing.properties.ProcessingOutputConfig.Outputs["corpus"].S3Output.S3Uri,
                     destination="/opt/ml/processing/input/corpus",
                     input_name="corpus",
-                )
+                ),
+                chitrakatha_input,
             ],
         ),
         depends_on=[step_preprocessing],
@@ -257,14 +279,14 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     step_synthesize = ProcessingStep(
         name="SynthesizePairs",
         step_args=embed_processor.run(
-            code="synthesize_pairs.py",
-            source_dir=_make_processing_source_dir(STEPS_DIR / "synthesize_pairs.py"),
+            code=str(STEPS_DIR / "synthesize_pairs.py"),
             inputs=[
                 ProcessingInput(
                     source=step_preprocessing.properties.ProcessingOutputConfig.Outputs["training"].S3Output.S3Uri,
                     destination="/opt/ml/processing/input/training",
                     input_name="training",
-                )
+                ),
+                chitrakatha_input,
             ],
             outputs=[
                 ProcessingOutput(
@@ -349,13 +371,12 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     # GPU instance: evaluate.py loads the merged 3B bfloat16 model (~6 GB) and
     # runs inference across 3 evaluation suites. ml.g4dn.xlarge (16 GB VRAM)
     # handles the 3B model comfortably and is cheaper than ml.g5.2xlarge.
-    eval_processor = PyTorchProcessor(
-        framework_version="2.1.0",
-        py_version="py310",
+    eval_processor = ScriptProcessor(
         role=ROLE_ARN,
         image_uri=f"763104351884.dkr.ecr.{AWS_REGION}.amazonaws.com/pytorch-training:2.1.0-gpu-py310-cu121-ubuntu20.04-sagemaker",
         instance_type="ml.g4dn.xlarge",
         instance_count=1,
+        command=["python3"],
         sagemaker_session=sm_session,
         tags=RESOURCE_TAGS,
         env=_CONTAINER_ENV,
@@ -370,8 +391,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     step_evaluate = ProcessingStep(
         name="EvaluateRAFT",
         step_args=eval_processor.run(
-            code="evaluate.py",
-            source_dir=_make_processing_source_dir(STEPS_DIR / "evaluate.py"),
+            code=str(STEPS_DIR / "evaluate.py"),
             inputs=[
                 ProcessingInput(
                     source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
@@ -383,6 +403,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
                     destination="/opt/ml/processing/input/eval",
                     input_name="eval",
                 ),
+                chitrakatha_input,
             ],
             outputs=[
                 ProcessingOutput(
@@ -494,15 +515,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Upload the chitrakatha package to S3 before building the pipeline so that
+    # every ProcessingStep can mount it via ProcessingInput + PYTHONPATH.
+    _sync_chitrakatha_to_s3()
+
     pipeline = create_pipeline()
 
     pipeline.upsert(role_arn=ROLE_ARN, tags=RESOURCE_TAGS)
     logger.info("Pipeline '%s' upserted successfully.", PIPELINE_NAME)
 
-    # Clean up temp dirs created by _make_processing_source_dir() and
-    # _make_training_source_dir() — upsert() has already uploaded them to S3.
-    for tmp_path in Path(tempfile.gettempdir()).glob("chitrakatha_proc_*"):
-        shutil.rmtree(tmp_path, ignore_errors=True)
+    # Clean up temp dirs created by _make_training_source_dir().
     for tmp_path in Path(tempfile.gettempdir()).glob("chitrakatha_train_*"):
         shutil.rmtree(tmp_path, ignore_errors=True)
 

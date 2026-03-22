@@ -33,9 +33,14 @@ import hashlib
 import json
 import logging
 import re
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+
+# openpyxl is not pre-installed in the SKLearnProcessor container.
+# Install it before any imports that depend on it (e.g. pandas Excel reader).
+subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl>=3.1.0", "--quiet"])
 
 from chitrakatha.exceptions import DataIngestionError
 from chitrakatha.ingestion.chunker import chunk_text

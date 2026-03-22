@@ -39,7 +39,7 @@ Run a single test file: `pytest tests/unit/test_faiss_writer.py -v`
 ### Pipeline (`pipeline/pipeline.py`)
 SageMaker Pipeline DAG using `PipelineSession`. Steps use `ProcessingStep(step_args=processor.run(...))` — **not** `get_run_args()`. When `PipelineSession` is active, `processor.run()` returns `RunArgs` via the `@runnable_by_pipeline` decorator instead of submitting a job.
 
-**Critical**: `source_dir` is only supported by `FrameworkProcessor` subclasses (`SKLearnProcessor`, `PyTorchProcessor`), **not** by `ScriptProcessor`. Use `PyTorchProcessor` (with explicit `image_uri` override) for any processing step that needs `source_dir`. `ScriptProcessor` must not be used for steps that bundle `source_dir`.
+**Critical**: `source_dir` must **not** be used in any `processor.run()` call. Neither `ScriptProcessor` nor `FrameworkProcessor` subclasses (`SKLearnProcessor`, `PyTorchProcessor`) reliably propagate `source_dir` through the `@runnable_by_pipeline` replay phase in SageMaker SDK ≥2.200. Instead: `_sync_chitrakatha_to_s3()` in `main()` uploads `src/chitrakatha/` to `s3://{SILVER_BUCKET}/pipeline-assets/src/`, each step mounts it via `chitrakatha_input` (`ProcessingInput`), and `PYTHONPATH=/opt/ml/processing/input/src` is set in `_CONTAINER_ENV`. Step scripts are passed as absolute paths: `code=str(STEPS_DIR / "script.py")`.
 
 `_make_processing_source_dir(script_path)` bundles each step script into a temp dir. It also copies a `<script_name>_requirements.txt` companion file if present (e.g., `preprocessing_requirements.txt` for openpyxl). The temp dir is cleaned up after `pipeline.upsert()`.
 
@@ -66,6 +66,7 @@ JumpStart base model: `meta-textgeneration-llama-3-2-3b-instruct`. `JumpStartEst
 
 ## Key Constraints
 
+- In commit messages do not add this text "Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 - **Python 3.12+**, strict typing (mypy strict mode), pydantic v2 throughout
 - **100% serverless** — no EC2, EKS, or persistent databases; scale-to-zero everything
 - **UTF-8 everywhere** — Devanagari text is first-class; use `ensure_ascii=False` in `json.dumps`
