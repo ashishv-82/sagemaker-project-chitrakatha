@@ -64,7 +64,10 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "sagemaker:DescribePipelineExecution",
       "sagemaker:ListPipelineExecutionSteps",
       "sagemaker:DescribePipeline",
-      "sagemaker:UpsertPipeline"
+      "sagemaker:UpsertPipeline",
+      "sagemaker:CreatePipeline",
+      "sagemaker:UpdatePipeline",
+      "sagemaker:AddTags"
     ]
     resources = [
       "arn:aws:sagemaker:${var.aws_region}:${local.account_id}:pipeline/${var.project_name}-*"
