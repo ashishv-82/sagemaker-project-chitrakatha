@@ -337,7 +337,10 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
             "LORA_R": "16",
             "LORA_ALPHA": "32",
         },
-        environment={"SAGEMAKER_EXPERIMENT_RUN": "chitrakatha-pipeline-run"},
+        environment={
+            "SAGEMAKER_EXPERIMENT_RUN": "chitrakatha-pipeline-run",
+            "accept_eula": "true",
+        },
         output_path=f"s3://{GOLD_BUCKET}/model-artifacts/",
         sagemaker_session=sm_session,
         tags=RESOURCE_TAGS,
