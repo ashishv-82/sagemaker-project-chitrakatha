@@ -9,7 +9,7 @@
 
 **Q1. Describe Project Chitrakatha in one paragraph.**
 
-Project Chitrakatha is a production-grade, 100% serverless MLOps platform on AWS that fine-tunes Llama 3.2 3B Instruct into a domain expert on Indian comic book history. It answers questions in both English and Devanagari Hindi. Raw source documents — articles, transcripts, Excel sheets — are dropped into S3, and the pipeline automatically preprocesses them, builds a RAG knowledge base using FAISS-on-S3, generates bilingual RAFT training data using Bedrock Claude, fine-tunes the model with QLoRA on SageMaker Spot instances, evaluates it against three quality thresholds, and registers it to the Model Registry for human approval before deploying to a scale-to-zero real-time endpoint. The entire baseline infrastructure costs ~$5/month when idle.
+Project Chitrakatha is a production-grade, 100% serverless MLOps platform on AWS that fine-tunes Qwen2.5-3B-Instruct into a domain expert on Indian comic book history. It answers questions in both English and Devanagari Hindi. Raw source documents — articles, transcripts, Excel sheets — are dropped into S3, and the pipeline automatically preprocesses them, builds a RAG knowledge base using FAISS-on-S3, generates bilingual RAFT training data using Bedrock Claude 3.5 Sonnet v2, fine-tunes the model with QLoRA on a SageMaker on-demand GPU instance, evaluates it against three quality thresholds, and registers it to the Model Registry for human approval before deploying to a scale-to-zero real-time endpoint. The entire baseline infrastructure costs ~$5/month when idle.
 
 ---
 
@@ -28,8 +28,8 @@ Raw files (Bronze S3)
   → Preprocessing: NFC normalise, deduplicate, language-tag, chunk
   → Silver S3 (corpus + training splits)
   → Flow A: Titan Embed v2 → FAISS index on S3 Vectors bucket
-  → Flow B: Claude Haiku 4.5 → RAFT Q&A pairs → Gold S3
-  → QLoRA fine-tune Llama 3.2 3B on Gold data (Spot)
+  → Flow B: Claude 3.5 Sonnet v2 → RAFT Q&A pairs → Gold S3
+  → QLoRA fine-tune Qwen2.5-3B-Instruct on Gold data (on-demand)
   → Evaluate (ROUGE-L ≥ 0.35, distractor robustness ≥ 0.70)
   → Model Registry (PendingManualApproval)
   → Human approves → Real-time endpoint deployed
@@ -74,11 +74,12 @@ This means if a preprocessing bug is discovered, you can re-run from Bronze with
 
 ---
 
-**Q8. Why Llama 3.2 3B and not a larger model like Llama 3.1 8B?**
+**Q8. Why Qwen2.5-3B-Instruct and not a larger model like Llama 3.1 8B?**
 
-Two reasons:
-1. **Cost**: 3B in 4-bit QLoRA fits on `ml.g4dn.xlarge` (16GB VRAM, ~$0.22/hr Spot). An 8B model requires `ml.g5.2xlarge` (24GB VRAM, ~$1.21/hr Spot) — 5× more expensive.
-2. **Inference**: The 3B model also fits comfortably on a single GPU at the real-time endpoint. For a domain-specific task with good training data, a smaller well-tuned model outperforms a larger untrained one.
+Three reasons:
+1. **Cost**: 3B in 4-bit QLoRA fits on `ml.g4dn.xlarge` (16GB VRAM, ~$0.74/hr on-demand). An 8B model requires `ml.g5.2xlarge` (24GB VRAM, ~$2.00/hr) — 2.7× more expensive with proportionally longer training time.
+2. **Inference**: The 3B model fits comfortably on a single GPU at the real-time endpoint. For a domain-specific task with good training data, a smaller well-tuned model outperforms a larger untrained one.
+3. **Licensing**: Qwen2.5-3B-Instruct is Apache 2.0 — no gated access, no HuggingFace approval process, no EULA. It downloads anonymously at training time. Llama models require Meta's approval workflow, which adds unpredictable delay to the pipeline setup.
 
 ---
 
@@ -103,9 +104,13 @@ Cold start takes ~3–5 minutes (JumpStart model download + container init). The
 
 ---
 
-**Q11. Why did you choose SageMaker JumpStart over HuggingFace Hub for the base model?**
+**Q11. Why did you choose HuggingFace Hub over SageMaker JumpStart for the base model?**
 
-JumpStart delivers model weights from an AWS-managed S3 bucket (`jumpstart-cache-prod-{region}`) directly to the training container over AWS backbone — no internet egress, no HuggingFace token required, and the weights are served from the same region as the training job (low latency). For a production MLOps setup, removing the dependency on an external service (HuggingFace Hub) reduces failure modes and keeps everything within the AWS trust boundary.
+JumpStart was the initial choice but hit two blockers in `ap-southeast-2`:
+1. **Regional coverage**: JumpStart supports Llama 3.2 *inference* in Sydney but does not publish fine-tuning scripts (`train-meta-textgeneration-llama-3-2-3b-instruct.tar.gz`) in the private cache bucket for that region — the training job fails at model download with `AccessDenied`.
+2. **Instance requirements**: JumpStart's Llama fine-tuning scripts require a minimum of `ml.g4dn.12xlarge`. Our on-demand quota covers only `ml.g4dn.xlarge`.
+
+The switch to HuggingFace Hub + `PyTorch` estimator resolved both: Qwen2.5-3B-Instruct is Apache 2.0 (no token), downloads in ~36 seconds from HuggingFace CDN inside the training container, and works on `ml.g4dn.xlarge` with 4-bit QLoRA. The trade-off is a dependency on an external service; for a production setup this would be mitigated by pre-caching model weights in S3 (the same pattern JumpStart uses internally).
 
 ---
 
@@ -115,9 +120,13 @@ SageMaker Pipelines is native to the platform — it provides automatic lineage 
 
 ---
 
-**Q13. How does the pipeline handle Spot instance interruptions during training?**
+**Q13. Why did you switch from Spot to on-demand instances for training?**
 
-`train.py` configures SageMaker Managed Spot Training with `checkpoint_s3_uri` pointing to `s3://gold/.../checkpoints/`. The `SFTTrainer` saves checkpoints at regular intervals. If the Spot instance is reclaimed, SageMaker automatically provisions a new instance and resumes from the last checkpoint. `max_wait=86400` (24 hours) gives SageMaker up to 24 hours to acquire a Spot instance if none is immediately available.
+Spot instances were the original plan (`use_spot_instances=True`) for ~65% cost savings. Two blockers prevented it:
+1. **Default quota is zero**: AWS sets `ml.g4dn.xlarge for Spot training job usage` to 0 for new accounts. A Service Quotas increase request takes 2–5 business days to approve.
+2. **On-demand quota was also zero**: Separately, `ml.g4dn.xlarge for training job usage` (on-demand) is also 0 by default and required its own quota increase request.
+
+We switched to `use_spot_instances=False` while the on-demand quota increase was approved. Spot can be re-enabled once the spot quota is also approved — just change `use_spot_instances=True` and add `max_wait=86400` in `pipeline.py`. The `checkpoint_s3_uri` is already configured in the `PyTorch` estimator, so resumption from interruption will work automatically once spot is enabled.
 
 ---
 
@@ -288,10 +297,12 @@ Current bottlenecks and solutions:
 Approximate costs for a medium corpus (~100 source chunks):
 - Preprocessing (ml.m5.xlarge, ~5 min): ~$0.05
 - Embedding (ml.m5.xlarge, ~10 min, Bedrock Titan): ~$0.15
-- Synthesis (ml.m5.xlarge, ~20 min, Claude Haiku 4.5): ~$0.30
-- Training (ml.g4dn.xlarge Spot, ~45 min): ~$0.17
-- Evaluation (ml.g4dn.xlarge, ~10 min): ~$0.04
-- **Total per run: ~$0.70**
+- Synthesis (ml.m5.2xlarge, ~15 min, Claude 3.5 Sonnet v2): ~$0.50–1.00
+- Training (ml.g4dn.xlarge on-demand, ~45–60 min): ~$0.56–0.74
+- Evaluation (ml.g4dn.xlarge, ~10 min): ~$0.12
+- **Total per run: ~$1.30–2.00**
+
+Note: Cost is higher than the original estimate because (a) Claude 3.5 Sonnet v2 is used instead of Claude Haiku (higher quality but ~10× the token cost), and (b) on-demand GPU pricing instead of Spot (~3× higher). Re-enabling Spot training and switching to a cheaper synthesis model would bring this back under $1/run.
 
 ---
 
@@ -414,9 +425,13 @@ The solution was to abandon `source_dir` entirely and use the S3 + ProcessingInp
 
 ---
 
-**Q46. Why did Claude Haiku 4.5 require a different invocation approach than earlier models?**
+**Q46. Why did Claude Haiku 4.5 fail and what model is used for synthesis instead?**
 
-Claude 4.x models on AWS Bedrock are not available via direct on-demand invocation by model ID. They must be called through a **cross-region inference profile**, which has the format `{region-prefix}.{model-id}` (e.g. `ap.anthropic.claude-haiku-4-5-20251001-v1:0` for AP regions). This profile routes requests through AWS's multi-region inference fleet. The IAM policy must also allow the inference profile ARN (`arn:aws:bedrock:*::inference-profile/ap.anthropic...`), not just the foundation model ARN.
+Two blockers prevented Claude Haiku 4.5 from working in `ap-southeast-2`:
+1. **Cross-region inference profiles**: Claude 4.x models require an `ap.` inference profile prefix (e.g. `ap.anthropic.claude-haiku-4-5-20251001-v1:0`). However, `ap-southeast-2` (Sydney) does not support the `ap.` profile — AWS raised `ValidationException: on-demand throughput isn't supported` for this region.
+2. **Legacy model block**: Falling back to Claude 3 Haiku (`anthropic.claude-3-haiku-20240307-v1:0`) failed with `ResourceNotFoundException: Legacy model` because the account had no recent usage of that model ID.
+
+The fix was to use **Claude 3.5 Sonnet v2** (`anthropic.claude-3-5-sonnet-20241022-v2:0`), which supports direct on-demand invocation in `ap-southeast-2` without an inference profile. The IAM policy grants `bedrock:InvokeModel` on the specific foundation model ARN. The trade-off is higher token cost (~10× Haiku), but Claude 3.5 Sonnet produces significantly higher quality bilingual RAFT pairs.
 
 ---
 
