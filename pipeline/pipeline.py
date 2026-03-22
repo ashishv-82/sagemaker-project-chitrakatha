@@ -179,7 +179,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_preprocessing = ProcessingStep(
         name="Preprocessing",
-        step_args=sklearn_processor.get_run_args(
+        step_args=sklearn_processor.run(
             code="preprocessing.py",
             source_dir=_make_processing_source_dir(STEPS_DIR / "preprocessing.py"),
             inputs=[
@@ -223,7 +223,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_embed = ProcessingStep(
         name="EmbedAndIndex",
-        step_args=embed_processor.get_run_args(
+        step_args=embed_processor.run(
             code="embed_and_index.py",
             source_dir=_make_processing_source_dir(STEPS_DIR / "embed_and_index.py"),
             inputs=[
@@ -243,7 +243,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_synthesize = ProcessingStep(
         name="SynthesizePairs",
-        step_args=embed_processor.get_run_args(
+        step_args=embed_processor.run(
             code="synthesize_pairs.py",
             source_dir=_make_processing_source_dir(STEPS_DIR / "synthesize_pairs.py"),
             inputs=[
@@ -350,7 +350,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_evaluate = ProcessingStep(
         name="EvaluateRAFT",
-        step_args=eval_processor.get_run_args(
+        step_args=eval_processor.run(
             code="evaluate.py",
             source_dir=_make_processing_source_dir(STEPS_DIR / "evaluate.py"),
             inputs=[
