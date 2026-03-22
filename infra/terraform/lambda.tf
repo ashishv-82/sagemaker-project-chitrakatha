@@ -49,7 +49,6 @@ resource "aws_lambda_function" "api_bridge" {
   environment {
     variables = {
       SAGEMAKER_ENDPOINT_NAME = "${var.project_name}-rag-serverless"
-      AWS_REGION              = var.aws_region
     }
   }
 

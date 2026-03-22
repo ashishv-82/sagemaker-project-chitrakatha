@@ -37,7 +37,7 @@ resource "aws_iam_role" "sagemaker_execution" {
   assume_role_policy = data.aws_iam_policy_document.sagemaker_assume_role.json
 
   tags = {
-    Purpose = "SageMaker pipeline execution — all processing, training, and endpoint steps"
+    Purpose = "SageMaker pipeline execution - all processing training and endpoint steps"
   }
 }
 
@@ -253,7 +253,7 @@ resource "aws_iam_role" "lambda_execution" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 
   tags = {
-    Purpose = "Lambda bridge: API Gateway → SageMaker Serverless endpoint"
+    Purpose = "Lambda bridge: API Gateway to SageMaker Serverless endpoint"
   }
 }
 

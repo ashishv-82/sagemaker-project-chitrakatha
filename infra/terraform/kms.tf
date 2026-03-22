@@ -71,20 +71,7 @@ resource "aws_kms_key" "chitrakatha" {
         Resource = "*"
       },
 
-      # S3 Vectors service principal for encrypted vector index storage.
-      {
-        Sid    = "AllowS3VectorsService"
-        Effect = "Allow"
-        Principal = {
-          Service = "s3vectors.amazonaws.com"
-        }
-        Action = [
-          "kms:GenerateDataKey",
-          "kms:Decrypt",
-          "kms:DescribeKey"
-        ]
-        Resource = "*"
-      },
+
 
       # Secrets Manager needs to encrypt/decrypt secrets at rest.
       {
