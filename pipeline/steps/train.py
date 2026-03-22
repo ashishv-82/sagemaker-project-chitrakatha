@@ -212,7 +212,7 @@ def main() -> None:
         lr_scheduler_type="cosine",
         fp16=True,   # T4 GPU (g4dn) supports fp16 but not bfloat16.
         bf16=False,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
