@@ -444,7 +444,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_register = RegisterModel(
         name="RegisterChitrakathaModel",
-        estimator=jumpstart_estimator,
+        estimator=pytorch_estimator,
         model_data=step_train.properties.ModelArtifacts.S3ModelArtifacts,
         content_types=["application/json"],
         response_types=["application/json"],
