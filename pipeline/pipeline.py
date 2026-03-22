@@ -31,7 +31,7 @@ Base model:
 Constraints:
     - All ARNs and bucket names from environment (Terraform outputs) — no hardcoding.
     - Tags: Project: Chitrakatha, CostCenter: MLOps-Research on every resource.
-    - Spot training: train_use_spot_instances=True, max_wait=86400.
+    - On-demand training (spot quota is 0 in ap-southeast-2 by default).
 """
 
 from __future__ import annotations
@@ -327,9 +327,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         role=ROLE_ARN,
         instance_type="ml.g4dn.xlarge",
         instance_count=1,
-        # Managed Spot Training — up to 70% cost reduction.
-        use_spot_instances=True,
-        max_wait=86400,  # 24 hours max total wait including spot interruption.
+        use_spot_instances=False,
         max_run=7200,    # 2 hours max actual training time.
         checkpoint_s3_uri=f"s3://{GOLD_BUCKET}/checkpoints/",
         hyperparameters={
