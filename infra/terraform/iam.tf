@@ -113,8 +113,8 @@ data "aws_iam_policy_document" "sagemaker_bedrock" {
     resources = [
       # Titan Embed Text v2 — used for corpus embedding (Flow A) and query embedding.
       "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0",
-      # Claude 3.5 Sonnet — used for RAFT training pair synthesis (Flow B).
-      "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+      # Claude Haiku 4.5 — used for RAFT training pair synthesis (Flow B). Cost-efficient, current model.
+      "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
     ]
   }
 

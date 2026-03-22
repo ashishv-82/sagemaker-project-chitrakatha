@@ -60,7 +60,7 @@ class Settings(BaseSettings):
         alias="BEDROCK_EMBED_MODEL_ID",
     )
     bedrock_teacher_model_id: str = Field(
-        default="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        default="anthropic.claude-haiku-4-5-20251001-v1:0",
         alias="BEDROCK_TEACHER_MODEL_ID",
     )
 
