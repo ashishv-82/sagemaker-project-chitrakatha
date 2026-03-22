@@ -11,22 +11,24 @@
 # Why rouge-score: HuggingFace evaluate's ROUGE metric uses rouge-score
 #   as its backend.
 
-# Fine-tuning stack
-peft>=0.10.0
-trl>=0.8.6
-datasets>=2.18.0
-bitsandbytes>=0.43.0
+# Fine-tuning stack — pinned to avoid breaking changes from TRL/transformers major bumps
+torch==2.1.0
+transformers==4.40.0
+peft==0.10.0
+trl==0.8.6
+datasets==2.18.0
+bitsandbytes==0.43.0
 
 # Evaluation metrics
-rouge-score>=0.1.2
-bert-score>=0.3.13
-evaluate>=0.4.1
+rouge-score==0.1.2
+bert-score==0.3.13
+evaluate==0.4.1
 
 # Multilingual tokenisation (required by BERTScore for Devanagari)
-sentencepiece>=0.2.0
+sentencepiece==0.2.0
 
 # Utilities
-accelerate>=0.28.0
-scipy>=1.12.0
-faiss-cpu>=1.8.0
-numpy>=1.26.0
+accelerate==0.29.0
+scipy==1.12.0
+faiss-cpu==1.8.0
+numpy==1.26.0

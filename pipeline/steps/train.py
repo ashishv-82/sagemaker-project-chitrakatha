@@ -46,8 +46,9 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    TrainingArguments,
 )
-from trl import SFTConfig, SFTTrainer
+from trl import SFTTrainer
 
 from chitrakatha.monitoring.experiments import log_hyperparameters, log_metrics
 
@@ -200,7 +201,7 @@ def main() -> None:
 
     train_ds, eval_ds = _load_gold_dataset()
 
-    training_args = SFTConfig(
+    training_args = TrainingArguments(
         output_dir=str(CHECKPOINT_DIR),
         num_train_epochs=NUM_EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
@@ -211,23 +212,23 @@ def main() -> None:
         lr_scheduler_type="cosine",
         fp16=True,   # T4 GPU (g4dn) supports fp16 but not bfloat16.
         bf16=False,
-        eval_strategy="epoch",
+        evaluation_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         logging_steps=50,
         report_to="none",  # We handle Experiments logging ourselves.
         dataloader_num_workers=4,
-        dataset_text_field="text",
-        max_seq_length=MAX_SEQ_LENGTH,
-        packing=False,
     )
 
     trainer = SFTTrainer(
         model=model,
-        processing_class=tokenizer,
+        tokenizer=tokenizer,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
+        dataset_text_field="text",
+        max_seq_length=MAX_SEQ_LENGTH,
+        packing=False,
         args=training_args,
     )
 
