@@ -26,6 +26,17 @@ Constraints:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
+# These packages are not pre-installed in the ScriptProcessor container.
+# Install before any chitrakatha imports that depend on them.
+subprocess.check_call([
+    sys.executable, "-m", "pip", "install",
+    "pydantic>=2.5.0", "pydantic-settings>=2.2.0", "pytz",
+    "--quiet",
+])
+
 import json
 import logging
 import os
