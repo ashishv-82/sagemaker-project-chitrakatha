@@ -105,3 +105,13 @@ output "github_actions_role_arn" {
   description = "ARN of the GitHub Actions OIDC role. Use this as AWS_ROLE_ARN in GitHub Secrets."
   value       = aws_iam_role.github_actions.arn
 }
+
+output "sagemaker_studio_domain_id" {
+  description = "SageMaker Studio domain ID. Navigate to this URL to open Studio: https://{region}.console.aws.amazon.com/sagemaker/home?region={region}#/studio"
+  value       = aws_sagemaker_domain.chitrakatha.id
+}
+
+output "sagemaker_studio_url" {
+  description = "Direct link to open SageMaker Studio in the AWS console."
+  value       = "https://${var.aws_region}.console.aws.amazon.com/sagemaker/home?region=${var.aws_region}#/studio/${aws_sagemaker_domain.chitrakatha.id}/open?profileName=${var.studio_user_profile_name}"
+}

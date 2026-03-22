@@ -240,6 +240,32 @@ resource "aws_iam_role_policy" "sagemaker_control_plane" {
 
 
 ###############################################################################
+# Inline Policy: SageMaker Studio App Management
+# App ARNs use an opaque domain ID so resource-level scoping is not possible.
+###############################################################################
+
+data "aws_iam_policy_document" "sagemaker_studio" {
+  statement {
+    sid    = "StudioAppLifecycle"
+    effect = "Allow"
+    actions = [
+      "sagemaker:CreateApp",
+      "sagemaker:DeleteApp",
+      "sagemaker:DescribeApp",
+      "sagemaker:ListApps",
+      "sagemaker:CreatePresignedDomainUrl",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "sagemaker_studio" {
+  name   = "sagemaker-studio-apps"
+  role   = aws_iam_role.sagemaker_execution.id
+  policy = data.aws_iam_policy_document.sagemaker_studio.json
+}
+
+###############################################################################
 # Lambda Execution Role (for the API Gateway bridge in Phase 4)
 ###############################################################################
 

@@ -75,3 +75,9 @@ variable "noncurrent_version_ia_transition_days" {
   type        = number
   default     = 30
 }
+
+variable "studio_user_profile_name" {
+  description = "SageMaker Studio user profile name. Used to open Studio from the AWS console."
+  type        = string
+  default     = "default"
+}
