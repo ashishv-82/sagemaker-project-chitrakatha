@@ -176,101 +176,54 @@ resource "aws_iam_role_policy" "sagemaker_logs" {
 }
 
 ###############################################################################
-# Inline Policy: SageMaker Control Plane (pipeline steps need these)
+# SageMaker control-plane permissions are covered by AmazonSageMakerFullAccess
+# (aws_iam_role_policy_attachment.sagemaker_full_access below).
 ###############################################################################
 
-data "aws_iam_policy_document" "sagemaker_control_plane" {
+###############################################################################
+# Inline Policy: IAM PassRole (self-pass for pipeline-spawned jobs)
+#
+# Why: When the SageMaker pipeline orchestrator creates a ProcessingJob or
+#      TrainingJob, it must pass the execution role to that child job.
+#      The orchestrator itself runs as this role, so it needs iam:PassRole
+#      on its own ARN. Without this the pipeline fails immediately at the
+#      first CreateProcessingJob call.
+###############################################################################
+
+data "aws_iam_policy_document" "sagemaker_passrole" {
   statement {
-    sid    = "SageMakerControlPlaneProjectScope"
-    effect = "Allow"
-    actions = [
-      "sagemaker:CreateProcessingJob",
-      "sagemaker:DescribeProcessingJob",
-      "sagemaker:StopProcessingJob",
-      "sagemaker:CreateTrainingJob",
-      "sagemaker:DescribeTrainingJob",
-      "sagemaker:StopTrainingJob",
-      "sagemaker:CreateModel",
-      "sagemaker:DescribeModel",
-      "sagemaker:DeleteModel",
-      "sagemaker:CreateEndpointConfig",
-      "sagemaker:DescribeEndpointConfig",
-      "sagemaker:DeleteEndpointConfig",
-      "sagemaker:CreateEndpoint",
-      "sagemaker:DescribeEndpoint",
-      "sagemaker:UpdateEndpoint",
-      "sagemaker:InvokeEndpoint",
-      "sagemaker:CreateModelPackage",
-      "sagemaker:DescribeModelPackage",
-      "sagemaker:UpdateModelPackage",
-      "sagemaker:ListModelPackages",
-      "sagemaker:CreateExperiment",
-      "sagemaker:DescribeExperiment",
-      "sagemaker:CreateTrial",
-      "sagemaker:DescribeTrial",
-      "sagemaker:CreateTrialComponent",
-      "sagemaker:AssociateTrialComponent",
-      # Pipeline operations (used by pipeline.py to manage its own execution).
-      "sagemaker:CreatePipeline",
-      "sagemaker:DescribePipeline",
-      "sagemaker:StartPipelineExecution",
-      "sagemaker:DescribePipelineExecution",
-      "sagemaker:ListPipelineExecutionSteps",
-      # Tagging: required when CreateProcessingJob/CreateTrainingJob is called
-      # with tags (which SageMaker Pipelines always does automatically).
-      "sagemaker:AddTags"
-    ]
-    # Two resource patterns are required:
-    # 1. chitrakatha-* — resources we explicitly name (endpoints, models, etc.)
-    # 2. pipelines-*   — processing/training jobs auto-named by the pipeline
-    #                    orchestrator (e.g. pipelines-<execid>-Preprocessing-<hash>)
-    resources = [
-      "arn:aws:sagemaker:${var.aws_region}:${local.account_id}:*/${var.project_name}-*",
-      "arn:aws:sagemaker:${var.aws_region}:${local.account_id}:*/pipelines-*",
-    ]
+    sid     = "PassRoleToSageMakerJobs"
+    effect  = "Allow"
+    actions = ["iam:PassRole"]
+    resources = [aws_iam_role.sagemaker_execution.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["sagemaker.amazonaws.com"]
+    }
   }
 }
 
-resource "aws_iam_role_policy" "sagemaker_control_plane" {
-  name   = "sagemaker-control-plane-project-scope"
+resource "aws_iam_role_policy" "sagemaker_passrole" {
+  name   = "iam-passrole-self"
   role   = aws_iam_role.sagemaker_execution.id
-  policy = data.aws_iam_policy_document.sagemaker_control_plane.json
+  policy = data.aws_iam_policy_document.sagemaker_passrole.json
 }
 
 
 
 ###############################################################################
-# Inline Policy: SageMaker Studio App Management
-# App ARNs use an opaque domain ID so resource-level scoping is not possible.
+# Managed Policy: AmazonSageMakerFullAccess
+# Grants admin-level SageMaker permissions for Studio users (view pipelines,
+# trigger runs, approve model packages, manage spaces/apps, etc.).
+# Supersedes the hand-rolled studio + control_plane inline policies for all
+# sagemaker:* actions. Non-SageMaker services (S3, KMS, Bedrock, Secrets,
+# CloudWatch) remain scoped via the inline policies above.
 ###############################################################################
 
-data "aws_iam_policy_document" "sagemaker_studio" {
-  statement {
-    sid    = "StudioAppLifecycle"
-    effect = "Allow"
-    actions = [
-      "sagemaker:CreateApp",
-      "sagemaker:DeleteApp",
-      "sagemaker:DescribeApp",
-      "sagemaker:ListApps",
-      "sagemaker:CreatePresignedDomainUrl",
-      "sagemaker:DescribeDomain",
-      "sagemaker:DescribeUserProfile",
-      # New Studio experience uses Spaces as workspaces.
-      "sagemaker:CreateSpace",
-      "sagemaker:DeleteSpace",
-      "sagemaker:DescribeSpace",
-      "sagemaker:UpdateSpace",
-      "sagemaker:ListSpaces",
-    ]
-    resources = ["*"]
-  }
-}
-
-resource "aws_iam_role_policy" "sagemaker_studio" {
-  name   = "sagemaker-studio-apps"
-  role   = aws_iam_role.sagemaker_execution.id
-  policy = data.aws_iam_policy_document.sagemaker_studio.json
+resource "aws_iam_role_policy_attachment" "sagemaker_full_access" {
+  role       = aws_iam_role.sagemaker_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess"
 }
 
 ###############################################################################
