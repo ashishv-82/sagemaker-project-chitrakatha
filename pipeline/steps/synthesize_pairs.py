@@ -10,8 +10,9 @@ Why: This step wraps synthesize_training_pairs.py for execution as a
 
 Input channel (SageMaker):
     /opt/ml/processing/input/training — training.jsonl from preprocessing step
-Output channel (SageMaker):
-    /opt/ml/processing/output/gold — written to S3 Gold /training-pairs/
+Output channels (SageMaker):
+    /opt/ml/processing/output/gold/train — 90% of pairs, written to S3 Gold /training-pairs/train/
+    /opt/ml/processing/output/gold/eval  — 10% of pairs (held-out), written to S3 Gold /training-pairs/eval/
 
 Metrics logged to SageMaker Experiments:
     - ``raft_pairs_generated``: total Q&A pairs produced
@@ -47,6 +48,11 @@ logger = logging.getLogger(__name__)
 # SageMaker Processing Job channel mount points.
 INPUT_TRAINING_PATH = Path("/opt/ml/processing/input/training/training.jsonl")
 OUTPUT_GOLD_DIR = Path("/opt/ml/processing/output/gold")
+OUTPUT_TRAIN_DIR = OUTPUT_GOLD_DIR / "train"
+OUTPUT_EVAL_DIR = OUTPUT_GOLD_DIR / "eval"
+
+# Fraction of synthesised pairs held out for evaluation (not seen during training).
+_EVAL_SPLIT: Final[float] = 0.10
 
 _CLAUDE_MODEL_ID: Final[str] = "anthropic.claude-3-5-sonnet-20241022-v2:0"
 _QA_PAIRS_PER_CHUNK: Final[int] = 3
@@ -196,11 +202,24 @@ def run(settings: Settings, experiment_run_name: str | None = None) -> int:
             output_lines.append(json.dumps(record, ensure_ascii=False))
             total_pairs += 1
 
-    # Write Gold JSONL output for the Training step to consume.
-    OUTPUT_GOLD_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_GOLD_DIR / f"raft_pairs_{uuid.uuid4().hex[:8]}.jsonl"
-    output_path.write_text("\n".join(output_lines), encoding="utf-8")
-    logger.info("Wrote %d RAFT pair(s) to %s.", total_pairs, output_path)
+    # Split into train (90%) / eval (10%) — shuffle first to avoid entity bias.
+    random.shuffle(output_lines)
+    n_eval = max(1, int(len(output_lines) * _EVAL_SPLIT))
+    eval_lines = output_lines[:n_eval]
+    train_lines = output_lines[n_eval:]
+
+    run_id = uuid.uuid4().hex[:8]
+    OUTPUT_TRAIN_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_EVAL_DIR.mkdir(parents=True, exist_ok=True)
+
+    train_path = OUTPUT_TRAIN_DIR / f"raft_pairs_{run_id}.jsonl"
+    eval_path = OUTPUT_EVAL_DIR / f"raft_pairs_eval_{run_id}.jsonl"
+    train_path.write_text("\n".join(train_lines), encoding="utf-8")
+    eval_path.write_text("\n".join(eval_lines), encoding="utf-8")
+    logger.info(
+        "Wrote %d train pair(s) to %s, %d eval pair(s) to %s.",
+        len(train_lines), train_path, len(eval_lines), eval_path,
+    )
 
     if experiment_run_name:
         log_metrics(

@@ -29,6 +29,13 @@ from pydantic import BaseModel, ValidationError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+_CORS_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+}
+
 # Global clients are preserved between Lambda invocations (cold-start mitigation).
 # Endpoint name is injected by Terraform from `lambda.tf`.
 ENDPOINT_NAME = os.environ.get("SAGEMAKER_ENDPOINT_NAME", "chitrakatha-rag-endpoint")
@@ -58,7 +65,7 @@ def handler(event: dict, context: object) -> dict:
         logger.warning("Invalid request: %s", exc)
         return {
             "statusCode": 400,
-            "headers": {"Content-Type": "application/json"},
+            "headers": _CORS_HEADERS,
             "body": json.dumps({"error": "Invalid request payload", "details": str(exc)}),
         }
 
@@ -89,7 +96,7 @@ def handler(event: dict, context: object) -> dict:
 
         return {
             "statusCode": 200,
-            "headers": {"Content-Type": "application/json"},
+            "headers": _CORS_HEADERS,
             "body": json.dumps(api_response, ensure_ascii=False),
         }
 
@@ -105,10 +112,7 @@ def handler(event: dict, context: object) -> dict:
         ):
             return {
                 "statusCode": 503,
-                "headers": {
-                    "Content-Type": "application/json",
-                    "Retry-After": "300",
-                },
+                "headers": {**_CORS_HEADERS, "Retry-After": "300"},
                 "body": json.dumps({
                     "error": "Endpoint is warming up — GPU instance is starting.",
                     "retry_after_seconds": 300,
@@ -116,7 +120,7 @@ def handler(event: dict, context: object) -> dict:
             }
         return {
             "statusCode": 500,
-            "headers": {"Content-Type": "application/json"},
+            "headers": _CORS_HEADERS,
             "body": json.dumps({"error": "Model inference error", "details": str(exc)}),
         }
 
@@ -124,6 +128,6 @@ def handler(event: dict, context: object) -> dict:
         logger.error("SageMaker invocation failed: %s", exc, exc_info=True)
         return {
             "statusCode": 500,
-            "headers": {"Content-Type": "application/json"},
+            "headers": _CORS_HEADERS,
             "body": json.dumps({"error": "Internal server error"}),
         }

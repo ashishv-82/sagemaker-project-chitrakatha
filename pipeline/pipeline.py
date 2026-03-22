@@ -255,10 +255,15 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
             ],
             outputs=[
                 ProcessingOutput(
-                    output_name="gold",
-                    source="/opt/ml/processing/output/gold",
-                    destination=f"s3://{GOLD_BUCKET}/training-pairs/",
-                )
+                    output_name="gold_train",
+                    source="/opt/ml/processing/output/gold/train",
+                    destination=f"s3://{GOLD_BUCKET}/training-pairs/train/",
+                ),
+                ProcessingOutput(
+                    output_name="gold_eval",
+                    source="/opt/ml/processing/output/gold/eval",
+                    destination=f"s3://{GOLD_BUCKET}/training-pairs/eval/",
+                ),
             ],
         ),
         depends_on=[step_preprocessing],
@@ -310,7 +315,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         estimator=jumpstart_estimator,
         inputs={
             "training": sagemaker.inputs.TrainingInput(
-                s3_data=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold"].S3Output.S3Uri,
+                s3_data=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold_train"].S3Output.S3Uri,
                 content_type="application/x-ndjson",
             ),
             # Explicit model channel delivers JumpStart weights to SM_CHANNEL_MODEL
@@ -360,7 +365,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
                     input_name="model",
                 ),
                 ProcessingInput(
-                    source=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold"].S3Output.S3Uri,
+                    source=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold_eval"].S3Output.S3Uri,
                     destination="/opt/ml/processing/input/eval",
                     input_name="eval",
                 ),
@@ -477,8 +482,16 @@ def main() -> None:
     args = parser.parse_args()
 
     pipeline = create_pipeline()
+
     pipeline.upsert(role_arn=ROLE_ARN, tags=RESOURCE_TAGS)
     logger.info("Pipeline '%s' upserted successfully.", PIPELINE_NAME)
+
+    # Clean up temp dirs created by _make_processing_source_dir() and
+    # _make_training_source_dir() — upsert() has already uploaded them to S3.
+    for tmp_path in Path(tempfile.gettempdir()).glob("chitrakatha_proc_*"):
+        shutil.rmtree(tmp_path, ignore_errors=True)
+    for tmp_path in Path(tempfile.gettempdir()).glob("chitrakatha_train_*"):
+        shutil.rmtree(tmp_path, ignore_errors=True)
 
     if args.execute:
         execution = pipeline.start(

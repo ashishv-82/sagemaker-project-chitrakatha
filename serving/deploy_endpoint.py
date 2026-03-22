@@ -12,6 +12,7 @@ Endpoint configuration:
     Instance type:   ml.g4dn.xlarge  (16 GB VRAM, NVIDIA T4, ~$0.74/hr)
     Auto Scaling:    MinCapacity=0, MaxCapacity=2
     Scale-out:       SageMakerVariantInvocationsPerInstance > 5 → add instance
+    Scale-from-zero: HasBacklogWithoutCapacity >= 1 → set capacity to 1
     Scale-in:        600 s cooldown after invocations drop (scale to 0)
 
 Cold-start behaviour:
@@ -86,15 +87,20 @@ def _wait_for_endpoint(sm_client: boto3.client, endpoint_name: str) -> None:
 
 
 def _configure_autoscaling(region: str) -> None:
-    """Register the endpoint with App Auto Scaling and attach a tracking policy.
+    """Register the endpoint with App Auto Scaling and attach two scaling policies.
 
-    MinCapacity=0 enables scale-to-zero: SageMaker will terminate the instance
-    after SCALE_IN_COOLDOWN seconds of idle invocations, and automatically
-    boot a new one when the next request arrives (~3-5 min cold start on GPU).
+    Two policies work together to enable true scale-to-zero:
 
-    The target tracking policy maintains ~5 invocations per instance per minute.
-    When traffic drops below this for SCALE_IN_COOLDOWN seconds, the instance
-    count decreases toward 0.
+    1. Target tracking on SageMakerVariantInvocationsPerInstance — scales OUT
+       when traffic is active (more than TARGET_INVOCATIONS requests/instance/min)
+       and scales IN toward 0 once traffic drops for SCALE_IN_COOLDOWN seconds.
+
+    2. Step scaling on HasBacklogWithoutCapacity — scales from 0 → 1 when a
+       request arrives while the endpoint has 0 instances. This metric becomes
+       non-zero the moment SageMaker queues a request with no instance to serve
+       it. Without this policy, an endpoint at 0 instances stays at 0 forever
+       because SageMakerVariantInvocationsPerInstance is undefined at 0 instances
+       and never triggers the target tracking scale-out.
     """
     resource_id = f"endpoint/{ENDPOINT_NAME}/variant/AllTraffic"
     aas = boto3.client("application-autoscaling", region_name=region)
@@ -109,8 +115,7 @@ def _configure_autoscaling(region: str) -> None:
     )
     logger.info("Registered scalable target: min=0, max=%d instances.", MAX_INSTANCES)
 
-    # Target tracking: scale out when invocations/instance exceed the target,
-    # scale in (toward 0) when they drop below it for SCALE_IN_COOLDOWN seconds.
+    # Policy 1 — target tracking: manages scale-out/in while instances are running.
     aas.put_scaling_policy(
         PolicyName=f"{ENDPOINT_NAME}-target-tracking",
         ServiceNamespace="sagemaker",
@@ -126,9 +131,31 @@ def _configure_autoscaling(region: str) -> None:
             "ScaleOutCooldown": SCALE_OUT_COOLDOWN,
         },
     )
+
+    # Policy 2 — step scaling on HasBacklogWithoutCapacity: wakes the endpoint
+    # from 0 instances when a request arrives. The metric is published by SageMaker
+    # and equals the number of requests queued with no instance available.
+    # A single step: any backlog (>=1) → set capacity to 1.
+    aas.put_scaling_policy(
+        PolicyName=f"{ENDPOINT_NAME}-scale-from-zero",
+        ServiceNamespace="sagemaker",
+        ResourceId=resource_id,
+        ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+        PolicyType="StepScaling",
+        StepScalingPolicyConfiguration={
+            "AdjustmentType": "ExactCapacity",
+            "Cooldown": SCALE_OUT_COOLDOWN,
+            "StepAdjustments": [
+                {
+                    "MetricIntervalLowerBound": 0,
+                    "ScalingAdjustment": 1,
+                }
+            ],
+        },
+    )
     logger.info(
         "Auto-scaling configured: target=%.0f invoc/instance/min, "
-        "scale-in cooldown=%d s.",
+        "scale-in cooldown=%d s, scale-from-zero policy attached.",
         TARGET_INVOCATIONS,
         SCALE_IN_COOLDOWN,
     )
