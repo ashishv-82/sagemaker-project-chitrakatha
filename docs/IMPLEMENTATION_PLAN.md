@@ -13,7 +13,7 @@
 | IaC | Terraform (primary) — outputs drive all runtime config |
 | Encryption | AWS-KMS CMKs on every S3 bucket |
 | IAM | Least-privilege, resource-scoped policies |
-| Training | Managed Spot Training, checkpointing mandatory |
+| Training | On-demand ml.g4dn.xlarge (Spot quota is 0 by default in ap-southeast-2); checkpointing retained |
 | Tagging | `Project: Chitrakatha`, `CostCenter: MLOps-Research` on every resource |
 | Chunking | Sliding window, 15% overlap for narrative continuity |
 | Versioning | S3 bucket versioning enabled on all data buckets |
@@ -167,7 +167,7 @@ S3 Bronze (raw)
 - Wraps Bedrock `amazon.titan-embed-text-v2:0`
 - Batch-embeds chunks (max 25 per API call to stay within limits)
 - Raises `BedrockEmbeddingError` on failure
-- Returns `list[float]` (1536-dim vectors)
+- Returns `list[float]` (1024-dim vectors)
 
 #### `src/chitrakatha/ingestion/faiss_writer.py` [REFAC]
 - Writes `(vector_id, embedding, metadata)` to a **FAISS Index** stored in S3.
@@ -273,7 +273,7 @@ S3 Bronze (raw)
   Answer: {answer}
   ```
   > Documents are shuffled randomly so the model cannot learn positional shortcuts.
-- **Managed Spot Training**: `train_use_spot_instances=True`, `max_wait=86400`
+- **On-demand training**: `use_spot_instances=False` (default Spot quota is 0 in ap-southeast-2)
 - Checkpointing to S3 Gold (`/checkpoints/`)
 - Logs hyperparameters + eval metrics to **SageMaker Experiments** run
 - Evaluation: ROUGE-L score on held-out 10% of Gold data

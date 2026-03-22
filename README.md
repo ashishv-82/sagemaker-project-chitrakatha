@@ -57,7 +57,7 @@ flowchart TD
 
 | # | Model | Provider | Role | When |
 |---|---|---|---|---|
-| 1 | **Titan Embed Text v2** | Amazon Bedrock | Converts text → 1536-dim vectors | Ingestion + every query |
+| 1 | **Titan Embed Text v2** | Amazon Bedrock | Converts text → 1024-dim vectors | Ingestion + every query |
 | 2 | **Claude 3.5 Sonnet** | Amazon Bedrock | Teacher: auto-generates bilingual **RAFT training data** (Q + golden doc + distractors + chain-of-thought) | Pipeline run only |
 | 3 | **Llama 3.2 3B Instruct** | SageMaker JumpStart | Student: fine-tuned with QLoRA on Gold Q&A — weights fetched from AWS-managed S3, no HuggingFace token required | Training only |
 | 4 | **Fine-tuned Llama 3.2 3B** | SageMaker (yours) | Serves user queries with RAG grounding via real-time GPU endpoint (scale-to-zero) | On demand |
@@ -86,9 +86,9 @@ flowchart LR
 | **Orchestration** | SageMaker Pipelines | CI/CD/CT (Continuous Training) as a DAG |
 | **Data Lake** | Amazon S3 (Bronze/Silver/Gold) | Multi-tier, versioned, KMS-encrypted |
 | **Vector Store** | S3 (FAISS Index) | Production-ready serverless RAG (Scale-to-Zero) |
-| **Embeddings** | Bedrock Titan Embed v2 | Serverless, 1536-dim, multilingual |
+| **Embeddings** | Bedrock Titan Embed v2 | Serverless, 1024-dim, multilingual |
 | **Teacher Model** | Bedrock Claude 3.5 Sonnet | Auto-synthesises bilingual training data |
-| **Fine-tuning** | QLoRA (PEFT + TRL) on SageMaker | Efficient 4-bit tuning using **RAFT** on Spot instances (ml.g4dn.xlarge) |
+| **Fine-tuning** | QLoRA (PEFT + TRL) on SageMaker | Efficient 4-bit tuning using **RAFT** on ml.g4dn.xlarge (on-demand) |
 | **Serving** | SageMaker Real-time Inference + App Auto Scaling | GPU endpoint (ml.g4dn.xlarge); scales to 0 instances when idle |
 | **Bridge** | AWS Lambda + API Gateway | Lightweight HTTP interface |
 | **IaC** | Terraform | Fully reproducible; outputs drive all config |
@@ -108,8 +108,8 @@ flowchart LR
 | Secrets Manager | ~$0.40/mo | 1 secret |
 | Bedrock embeddings | ~$0.10/run | Titan Embed v2: $0.00002/1K tokens |
 | Bedrock synthesis | ~$1–3/run | Claude 3.5 Sonnet per pipeline execution |
-| SageMaker training | ~$0.50–1/run | g4dn.xlarge Spot (~$0.22/hr); 3B model ~30-45 min |
-| SageMaker evaluation | ~$0.15–0.30/run | g4dn.xlarge Spot; 3B model evaluates in ~10 min |
+| SageMaker training | ~$0.37–0.74/run | g4dn.xlarge on-demand (~$0.74/hr); 3B model ~30-45 min |
+| SageMaker evaluation | ~$0.12–0.25/run | g4dn.xlarge on-demand; 3B model evaluates in ~10 min |
 | Real-time endpoint | $0 idle | Scales to 0 via App Auto Scaling; ~$0.74/hr when active |
 | **Baseline monthly** | **~$5** | When endpoint is idle and not actively retraining |
 
