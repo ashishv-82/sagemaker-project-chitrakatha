@@ -47,7 +47,8 @@ import sagemaker
 from sagemaker import model_uris
 from sagemaker.jumpstart.estimator import JumpStartEstimator
 from sagemaker.model import Model
-from sagemaker.processing import ProcessingInput, ProcessingOutput, ScriptProcessor
+from sagemaker.processing import ProcessingInput, ProcessingOutput
+from sagemaker.pytorch import PyTorchProcessor
 from sagemaker.sklearn.processing import SKLearnProcessor
 from sagemaker.workflow.condition_step import ConditionStep
 from sagemaker.workflow.conditions import ConditionGreaterThanOrEqualTo
@@ -219,12 +220,15 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     ###########################################################################
 
     # CPU image: Flow A/B only call Bedrock APIs — no GPU computation required.
-    embed_processor = ScriptProcessor(
+    # PyTorchProcessor (FrameworkProcessor subclass) is used instead of ScriptProcessor
+    # because it supports source_dir in run(), which ScriptProcessor does not.
+    embed_processor = PyTorchProcessor(
+        framework_version="2.1.0",
+        py_version="py310",
         role=ROLE_ARN,
         image_uri=f"763104351884.dkr.ecr.{AWS_REGION}.amazonaws.com/pytorch-training:2.1.0-cpu-py310-ubuntu20.04-sagemaker",
         instance_type="ml.m5.2xlarge",
         instance_count=1,
-        command=["python3"],
         sagemaker_session=sm_session,
         tags=RESOURCE_TAGS,
         env={**_CONTAINER_ENV, "SAGEMAKER_EXPERIMENT_RUN": "chitrakatha-pipeline-run"},
@@ -345,12 +349,13 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     # GPU instance: evaluate.py loads the merged 3B bfloat16 model (~6 GB) and
     # runs inference across 3 evaluation suites. ml.g4dn.xlarge (16 GB VRAM)
     # handles the 3B model comfortably and is cheaper than ml.g5.2xlarge.
-    eval_processor = ScriptProcessor(
+    eval_processor = PyTorchProcessor(
+        framework_version="2.1.0",
+        py_version="py310",
         role=ROLE_ARN,
         image_uri=f"763104351884.dkr.ecr.{AWS_REGION}.amazonaws.com/pytorch-training:2.1.0-gpu-py310-cu121-ubuntu20.04-sagemaker",
         instance_type="ml.g4dn.xlarge",
         instance_count=1,
-        command=["python3"],
         sagemaker_session=sm_session,
         tags=RESOURCE_TAGS,
         env=_CONTAINER_ENV,
