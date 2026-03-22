@@ -471,7 +471,6 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
             step_condition,
         ],
         sagemaker_session=sm_session,
-        tags=RESOURCE_TAGS,
     )
 
     return pipeline
