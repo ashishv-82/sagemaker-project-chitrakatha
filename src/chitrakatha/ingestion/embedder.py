@@ -10,7 +10,7 @@ Why: Titan Embed Text v2 is used for both corpus embedding (Flow A, offline)
 
 Constraints:
     - Max batch size: 25 (Bedrock Titan Embed v2 API limit).
-    - Output dimension: 1536 (must match the S3 Vectors index dimension).
+    - Output dimension: 1024 (Titan Embed v2 default; v2 does not support 1536).
     - Raises ``BedrockEmbeddingError`` on any API failure — never swallows errors
       silently, as a partial embedding batch would corrupt the vector index.
     - Retry logic: 3 attempts with exponential backoff on transient throttling.
@@ -37,8 +37,10 @@ _TITAN_MODEL_ID: Final[str] = "amazon.titan-embed-text-v2:0"
 # Maximum chunks per Bedrock API call (API hard limit).
 _MAX_BATCH_SIZE: Final[int] = 25
 
-# Expected output vector dimensionality — must match S3 Vectors index.
-_EXPECTED_DIM: Final[int] = 1536
+# Expected output vector dimensionality.
+# Titan Embed Text v2 supports 256, 512, or 1024 dims (default: 1024).
+# Titan Embed Text v1 outputs 1536 dims — v2 does NOT support 1536.
+_EXPECTED_DIM: Final[int] = 1024
 
 # Retry configuration for transient throttling / service errors.
 _MAX_RETRIES: Final[int] = 3
@@ -58,7 +60,7 @@ def _embed_single(
         retries: Number of retry attempts on throttling errors.
 
     Returns:
-        List of 1536 floats representing the embedding vector.
+        List of 1024 floats representing the embedding vector.
 
     Raises:
         BedrockEmbeddingError: After all retries are exhausted or on a

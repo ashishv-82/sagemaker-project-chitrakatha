@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 INDEX_FILENAME: Final[str] = "index.faiss"
 META_FILENAME: Final[str] = "metadata.pkl"
 
-# At ~1536 float32 dims, each vector is ~6 KB. 50k vectors ≈ 300 MB in RAM.
+# At ~1024 float32 dims, each vector is ~4 KB. 50k vectors ≈ 200 MB in RAM.
 # Serverless endpoints have 6 GB memory, but cold-start download time becomes
 # significant beyond this threshold. Log a warning so operators know to consider
 # index sharding or upgrading to a persistent vector store.

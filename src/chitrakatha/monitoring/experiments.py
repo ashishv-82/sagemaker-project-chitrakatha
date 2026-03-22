@@ -40,7 +40,7 @@ def log_metrics(run_name: str, metrics: dict[str, float]) -> None:
     try:
         from sagemaker.experiments.run import Run  # noqa: PLC0415
 
-        with Run(run_name=run_name, sagemaker_session=None) as run:
+        with Run(experiment_name="chitrakatha-mlops", run_name=run_name, sagemaker_session=None) as run:
             for name, value in metrics.items():
                 run.log_metric(name=name, value=float(value))
         logger.info("Logged metrics to experiment run '%s': %s", run_name, metrics)
@@ -75,7 +75,7 @@ def log_hyperparameters(run_name: str, hyperparameters: dict[str, object]) -> No
     try:
         from sagemaker.experiments.run import Run  # noqa: PLC0415
 
-        with Run(run_name=run_name, sagemaker_session=None) as run:
+        with Run(experiment_name="chitrakatha-mlops", run_name=run_name, sagemaker_session=None) as run:
             for name, value in hyperparameters.items():
                 run.log_parameter(name=name, value=str(value))
         logger.info(
