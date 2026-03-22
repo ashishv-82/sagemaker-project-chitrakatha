@@ -119,7 +119,14 @@ def _call_claude(
             raw = json.loads(resp["body"].read())
             usage = raw.get("usage", {})
             total_tokens[0] += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-            return json.loads(raw["content"][0]["text"].strip())
+            parsed = json.loads(raw["content"][0]["text"].strip())
+            # Claude sometimes wraps the array in a dict (e.g. {"pairs": [...]}).
+            # Unwrap to always return a list of dicts.
+            if isinstance(parsed, dict):
+                parsed = next(
+                    (v for v in parsed.values() if isinstance(v, list)), []
+                )
+            return parsed
 
         except json.JSONDecodeError as exc:
             if attempt == _MAX_RETRIES:
