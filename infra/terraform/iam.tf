@@ -255,6 +255,7 @@ data "aws_iam_policy_document" "sagemaker_studio" {
       "sagemaker:ListApps",
       "sagemaker:CreatePresignedDomainUrl",
       "sagemaker:DescribeDomain",
+      "sagemaker:DescribeUserProfile",
       # New Studio experience uses Spaces as workspaces.
       "sagemaker:CreateSpace",
       "sagemaker:DeleteSpace",
