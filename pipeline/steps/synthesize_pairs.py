@@ -163,15 +163,14 @@ def run(settings: Settings, experiment_run_name: str | None = None) -> int:
     output_lines: list[str] = []
 
     for i, golden in enumerate(all_chunks):
-        golden_entity = golden.get("source_entity", "")
-        golden_publisher = golden.get("publisher", "")
+        # Prefer distractors from a different source document so the model must
+        # distinguish across documents, not just within one.  source_document is
+        # always present (written by preprocessing.py).
+        golden_doc = golden.get("source_document", "")
 
         candidates = [
             c for c in all_chunks
-            if c is not golden and (
-                c.get("source_entity") != golden_entity
-                or c.get("publisher") != golden_publisher
-            )
+            if c is not golden and c.get("source_document", "") != golden_doc
         ] or [c for c in all_chunks if c is not golden]
 
         distractors = random.sample(candidates, min(_NUM_DISTRACTORS, len(candidates)))

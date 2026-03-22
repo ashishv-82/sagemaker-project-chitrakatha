@@ -189,8 +189,8 @@ def query_vectors(
             with open(local_meta_path, "rb") as f:
                 metadata_map = pickle.load(f)
         except ClientError as exc:
-            # If the index doesn't exist, return empty
-            if exc.response['Error']['Code'] == "404":
+            # S3 raises NoSuchKey (not "404") when the object doesn't exist.
+            if exc.response["Error"]["Code"] in {"NoSuchKey", "NoSuchBucket"}:
                 logger.warning("Vector index not found in S3 at %s/%s", bucket_name, prefix)
                 return []
             raise S3VectorError(f"Failed to download FAISS index from S3: {exc}") from exc

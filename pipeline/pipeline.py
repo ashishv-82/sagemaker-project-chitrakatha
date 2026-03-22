@@ -97,6 +97,10 @@ def _make_processing_source_dir(step_script: Path) -> str:
     directory inside the processing container, so ``import chitrakatha`` resolves
     without requiring a custom Docker image or a pip-install shell command.
 
+    If a companion ``<stem>_requirements.txt`` exists alongside the step script,
+    it is copied into the temp dir as ``requirements.txt`` so the processor can
+    install extra packages (e.g. openpyxl for the sklearn preprocessing container).
+
     Args:
         step_script: Absolute path to the pipeline step .py file.
 
@@ -107,6 +111,10 @@ def _make_processing_source_dir(step_script: Path) -> str:
     tmp = Path(tempfile.mkdtemp(prefix="chitrakatha_proc_"))
     shutil.copy2(step_script, tmp / step_script.name)
     shutil.copytree(ROOT_DIR / "src" / "chitrakatha", tmp / "chitrakatha")
+    # Copy companion requirements.txt if present (e.g. preprocessing_requirements.txt).
+    companion_reqs = step_script.parent / f"{step_script.stem}_requirements.txt"
+    if companion_reqs.exists():
+        shutil.copy2(companion_reqs, tmp / "requirements.txt")
     return str(tmp)
 
 
@@ -182,6 +190,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         step_args=sklearn_processor.run(
             code="preprocessing.py",
             source_dir=_make_processing_source_dir(STEPS_DIR / "preprocessing.py"),
+            requirements="requirements.txt",
             inputs=[
                 ProcessingInput(
                     source=input_data_uri,
