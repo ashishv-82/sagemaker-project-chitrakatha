@@ -41,7 +41,7 @@ flowchart TD
     D --> F[("S3 Vectors<br/>(FAISS Index)")]
     E --> G[("S3 Gold<br/>Q&A JSONL")]
 
-    G -->|"QLoRA · Spot"| H["SageMaker Training<br/>Llama 3.2 3B"]
+    G -->|"QLoRA · on-demand"| H["SageMaker Training<br/>Qwen2.5-3B"]
     H --> I[(Model Registry)]
     I -->|approved| J["Real-time Endpoint<br/>(scale-to-zero)"]
 
@@ -59,8 +59,8 @@ flowchart TD
 |---|---|---|---|---|
 | 1 | **Titan Embed Text v2** | Amazon Bedrock | Converts text → 1024-dim vectors | Ingestion + every query |
 | 2 | **Claude 3.5 Sonnet** | Amazon Bedrock | Teacher: auto-generates bilingual **RAFT training data** (Q + golden doc + distractors + chain-of-thought) | Pipeline run only |
-| 3 | **Llama 3.2 3B Instruct** | SageMaker JumpStart | Student: fine-tuned with QLoRA on Gold Q&A — weights fetched from AWS-managed S3, no HuggingFace token required | Training only |
-| 4 | **Fine-tuned Llama 3.2 3B** | SageMaker (yours) | Serves user queries with RAG grounding via real-time GPU endpoint (scale-to-zero) | On demand |
+| 3 | **Qwen2.5-3B-Instruct** | HuggingFace Hub (Apache 2.0) | Student: fine-tuned with QLoRA on Gold Q&A — downloaded anonymously, no token or EULA required | Training only |
+| 4 | **Fine-tuned Qwen2.5-3B** | SageMaker (yours) | Serves user queries with RAG grounding via real-time GPU endpoint (scale-to-zero) | On demand |
 
 ---
 
