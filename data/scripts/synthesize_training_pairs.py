@@ -52,7 +52,7 @@ from chitrakatha.exceptions import BedrockSynthesisError, DataIngestionError
 
 logger = logging.getLogger(__name__)
 
-_CLAUDE_MODEL_ID: Final[str] = "ap.anthropic.claude-haiku-4-5-20251001-v1:0"
+_CLAUDE_MODEL_ID: Final[str] = "anthropic.claude-3-haiku-20240307-v1:0"
 _SILVER_TRAINING_PREFIX: Final[str] = "training/"
 _GOLD_TRAINING_PREFIX: Final[str] = "training-pairs/"
 _QA_PAIRS_PER_CHUNK: Final[int] = 3
