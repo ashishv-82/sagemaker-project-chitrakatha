@@ -185,6 +185,20 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     }
   }
 
+  # _sync_chitrakatha_to_s3() uploads to KMS-encrypted Silver bucket; SageMaker
+  # pipeline.upsert() uploads source_dir tarballs to KMS-encrypted Gold bucket.
+  # Both require GenerateDataKey (encrypt) and Decrypt (read-back verification).
+  statement {
+    sid    = "KMSEncryptDecryptForS3Uploads"
+    effect = "Allow"
+    actions = [
+      "kms:GenerateDataKey",
+      "kms:Decrypt",
+      "kms:DescribeKey",
+    ]
+    resources = [aws_kms_key.chitrakatha.arn]
+  }
+
   # pipeline.py calls model_uris.retrieve() to fetch JumpStart model metadata.
   # The SageMaker SDK reads this from an AWS-managed public S3 bucket
   # (jumpstart-cache-prod-{region}). Without this grant the pipeline definition
