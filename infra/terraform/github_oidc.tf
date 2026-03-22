@@ -29,7 +29,7 @@ data "aws_iam_policy_document" "github_actions_assume_role" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       # Only allow your specific repository to assume this role.
-      values   = ["repo:ashishv-82/sagemaker-project-chitrakatha:*"]
+      values = ["repo:ashishv-82/sagemaker-project-chitrakatha:*"]
     }
 
     condition {
@@ -91,9 +91,9 @@ data "aws_iam_policy_document" "github_actions_permissions" {
 
   # Allow GitHub Actions to "Pass" the SageMaker role to the service.
   statement {
-    sid    = "IAMPassRoleToSageMaker"
-    effect = "Allow"
-    actions = ["iam:PassRole"]
+    sid       = "IAMPassRoleToSageMaker"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
     resources = [aws_iam_role.sagemaker_execution.arn]
     condition {
       test     = "StringEquals"

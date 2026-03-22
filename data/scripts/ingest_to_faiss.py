@@ -25,7 +25,7 @@ from chitrakatha.config import Settings
 from chitrakatha.exceptions import BedrockEmbeddingError, DataIngestionError, S3VectorError
 from chitrakatha.ingestion.chunker import chunk_text
 from chitrakatha.ingestion.embedder import embed_chunks
-from chitrakatha.ingestion.vector_writer import write_vectors
+from chitrakatha.ingestion.faiss_writer import write_vectors
 
 logger = logging.getLogger(__name__)
 

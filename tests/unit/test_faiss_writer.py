@@ -19,7 +19,7 @@ from botocore.exceptions import ClientError
 
 from chitrakatha.exceptions import S3VectorError
 from chitrakatha.ingestion.chunker import Chunk
-from chitrakatha.ingestion.vector_writer import write_vectors, query_vectors
+from chitrakatha.ingestion.faiss_writer import write_vectors, query_vectors
 
 
 def _make_chunk(text: str = "Nagraj is a superhero.", index: int = 0) -> Chunk:
@@ -38,7 +38,7 @@ def _make_embedding() -> list[float]:
 class TestWriteVectors:
     """Tests for ``write_vectors`` using FAISS + S3."""
 
-    @patch("chitrakatha.ingestion.vector_writer._get_s3_client")
+    @patch("chitrakatha.ingestion.faiss_writer._get_s3_client")
     @patch("faiss.write_index")
     @patch("faiss.read_index")
     @patch("builtins.open", new_callable=mock_open)
@@ -63,7 +63,7 @@ class TestWriteVectors:
         assert mock_s3.download_file.call_count == 1
         assert mock_write.called
 
-    @patch("chitrakatha.ingestion.vector_writer._get_s3_client")
+    @patch("chitrakatha.ingestion.faiss_writer._get_s3_client")
     @patch("faiss.read_index")
     @patch("faiss.write_index")
     @patch("builtins.open", new_callable=mock_open)
@@ -101,7 +101,7 @@ class TestWriteVectors:
         print(f"  [TEST] Success: Correctly filtered existing IDs. Written count: {written}")
         assert mock_s3.upload_file.call_count == 2 
 
-    @patch("chitrakatha.ingestion.vector_writer._get_s3_client")
+    @patch("chitrakatha.ingestion.faiss_writer._get_s3_client")
     def test_upload_failure_raises_s3_vector_error(self, mock_s3_factory) -> None:
         """ClientError during upload raises S3VectorError."""
         mock_s3 = MagicMock()
@@ -125,7 +125,7 @@ class TestWriteVectors:
 class TestQueryVectors:
     """Tests for ``query_vectors`` using FAISS + S3."""
 
-    @patch("chitrakatha.ingestion.vector_writer._get_s3_client")
+    @patch("chitrakatha.ingestion.faiss_writer._get_s3_client")
     @patch("faiss.read_index")
     def test_query_returns_meta_results(self, mock_read, mock_s3_factory) -> None:
         """Mock index search returns indices that are mapped to metadata."""
@@ -158,7 +158,7 @@ class TestQueryVectors:
         assert results[0]["chunk_text"] == "Found me!"
         assert results[0]["score"] == pytest.approx(0.9)
 
-    @patch("chitrakatha.ingestion.vector_writer._get_s3_client")
+    @patch("chitrakatha.ingestion.faiss_writer._get_s3_client")
     def test_query_missing_index_returns_empty(self, mock_s3_factory) -> None:
         """If index file is missing (404), return empty list."""
         mock_s3 = MagicMock()

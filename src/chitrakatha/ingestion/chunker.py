@@ -11,7 +11,7 @@ Design decisions:
     - Devanagari and other non-ASCII scripts are explicitly preserved — the
       chunker never strips, normalises-away, or truncates Unicode characters.
     - Returns typed ``Chunk`` pydantic v2 models so downstream steps
-      (embedder, vector_writer) benefit from runtime field validation.
+      (embedder, faiss_writer) benefit from runtime field validation.
 
 Constraints:
     - ``overlap_ratio`` must be in [0.0, 0.5). Values >= 0.5 cause the chunk

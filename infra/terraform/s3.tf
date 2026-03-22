@@ -10,7 +10,7 @@
 #   1. Bronze  — raw ingest (articles, transcripts, Excel, synopsis)
 #   2. Silver  — cleaned JSONL (preprocessing output)
 #   3. Gold    — fine-tuning JSONL, model checkpoints, evaluation results
-#   4. Vectors — S3 Vectors bucket (special type, holds the RAG index)
+#   4. Vectors — Bucket for FAISS index (holds the RAG index)
 #
 # Constraints:
 #   - All buckets: versioning ENABLED, KMS CMK encryption, public access BLOCKED.
@@ -220,11 +220,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "gold" {
 }
 
 ###############################################################################
-# Vectors — S3 Vectors Bucket (RAG Index)
+# Vectors — FAISS Index Bucket
 #
-# Why: The S3 Vectors bucket is a special bucket type introduced in 2026 that
-#      natively stores and queries vector embeddings without a standalone DB.
-#      It must be created before the aws_s3_vectors_index in s3_vectors.tf.
+# Why: Stores the FAISS index file for "Scale-to-Zero" RAG.
 ###############################################################################
 
 resource "aws_s3_bucket" "vectors" {

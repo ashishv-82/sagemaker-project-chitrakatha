@@ -8,7 +8,7 @@ Why: Deploys the latest approved model from the Chitrakatha Model Registry
 Capabilities:
     - Finds the latest 'Approved' model package in the group.
     - Creates a serverless endpoint configuration (6144 MB RAM, max concurrency 5).
-    - Injects ``S3_VECTOR_INDEX_ARN`` and ``S3_VECTORS_BUCKET`` so the
+    - Injects ``S3_FAISS_INDEX_PREFIX`` and ``S3_VECTORS_BUCKET`` so the
       inference container can query the RAG knowledge base.
     - Idempotent: Updates the endpoint if it exists, creates if it doesn't.
 
@@ -90,7 +90,7 @@ def deploy() -> None:
         # Inject RAG environment variables so inference.py can contact S3 Vectors.
         env={
             "S3_VECTORS_BUCKET": settings.s3_vectors_bucket,
-            "S3_VECTOR_INDEX_NAME": settings.s3_vector_index_name,
+            "S3_FAISS_INDEX_PREFIX": settings.s3_faiss_index_prefix,
             "AWS_REGION": settings.aws_region,
         },
     )

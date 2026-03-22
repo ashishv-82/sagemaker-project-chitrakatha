@@ -40,7 +40,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install boto3 sagemaker
 
-      - name: Trigger SageMaker Pipeline
+      - name: Set Up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Fetch Terraform Outputs
+        id: tf-outputs
+        working-directory: infra/terraform
         run: |
-          echo "Starting Chitrakatha Training Pipeline..."
+          terraform init -input=false
+          echo "SAGEMAKER_ROLE_ARN=$(terraform output -raw sagemaker_role_arn)" >> $GITHUB_ENV
+          echo "BRONZE_BUCKET=$(terraform output -raw s3_bronze_bucket)" >> $GITHUB_ENV
+          echo "SILVER_BUCKET=$(terraform output -raw s3_silver_bucket)" >> $GITHUB_ENV
+          echo "GOLD_BUCKET=$(terraform output -raw s3_gold_bucket)" >> $GITHUB_ENV
+          echo "KMS_KEY_ARN=$(terraform output -raw kms_key_arn)" >> $GITHUB_ENV
+
+      - name: Trigger SageMaker Pipeline
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-2' }}
+        run: |
+          echo "Starting Chitrakatha Training Pipeline for $BRONZE_BUCKET..."
           python pipeline/pipeline.py --execute

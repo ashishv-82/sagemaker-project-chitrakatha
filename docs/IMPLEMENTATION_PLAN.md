@@ -86,13 +86,12 @@ Provisions **4 S3 buckets** with versioning + KMS + lifecycle:
 1. `chitrakatha-bronze-{account_id}` — raw ingest (articles, transcripts, Excel)
 2. `chitrakatha-silver-{account_id}` — cleaned JSONL
 3. `chitrakatha-gold-{account_id}` — training-ready datasets + model artifacts
-4. `chitrakatha-vectors-{account_id}` — **S3 Vectors** bucket (special `--enable-s3-vectors` flag)
+4. `chitrakatha-vectors-{account_id}` — **FAISS Index** bucket
 
-#### `infra/terraform/s3_vectors.tf` [REFAC]
-- **S3 Vector Placeholder** (Placeholder for the FAISS index storage)
-- Dimension: `1536` (Titan Embed v2 output size)
-- Metric: `cosine` (InnerProduct in FAISS)
-- Links to vectors bucket + KMS key
+#### `infra/terraform/faiss_index.tf` [NEW]
+- **FAISS Index URI Placeholder**
+- Defines the S3 URI where the FAISS index will be written and read from.
+- Links to vectors bucket.
 
 #### `infra/terraform/iam.tf` [NEW]
 - **SageMaker Execution Role** with least-privilege inline policies:
@@ -108,7 +107,7 @@ Provisions **4 S3 buckets** with versioning + KMS + lifecycle:
 - Placeholder value — real value injected via CI/CD
 
 #### `infra/terraform/outputs.tf` [NEW]
-- Exports: `sagemaker_role_arn`, `kms_key_arn`, `s3_bronze_bucket`, `s3_silver_bucket`, `s3_gold_bucket`, `s3_vectors_bucket`, `s3_vector_index_arn`, `secret_arn`
+- Exports: `sagemaker_role_arn`, `kms_key_arn`, `s3_bronze_bucket`, `s3_silver_bucket`, `s3_gold_bucket`, `s3_vectors_bucket`, `s3_faiss_index_prefix`, `secret_arn`
 
 #### `infra/terraform/cloudwatch.tf` [NEW]
 - CloudWatch Alarms:
@@ -169,14 +168,14 @@ S3 Bronze (raw)
 - Raises `BedrockEmbeddingError` on failure
 - Returns `list[float]` (1536-dim vectors)
 
-#### `src/chitrakatha/ingestion/vector_writer.py` [REFAC]
+#### `src/chitrakatha/ingestion/faiss_writer.py` [REFAC]
 - Writes `(vector_id, embedding, metadata)` to a **FAISS Index** stored in S3.
 - Metadata payload: `{"chunk_id": ..., "chunk_text": ..., "source_document": ..., "chunk_index": ..., "token_count": ...}`
 - Supports incremental updates by downloading existing index, appending, and re-uploading.
 - Raises `S3VectorError` on failure.
 
-#### `data/scripts/ingest_to_vectors.py` [NEW]
-- Orchestration: reads `/corpus/` chunks from Silver → chunk → embed → write to S3 Vectors
+#### `data/scripts/ingest_to_faiss.py` [NEW]
+- Orchestration: reads `/corpus/` chunks from Silver → chunk → embed → write FAISS index to S3
 - Idempotent: checks for existing vector IDs before re-inserting
 - Runs as a **SageMaker Processing Job** (see Phase 3)
 
@@ -238,8 +237,8 @@ S3 Bronze (raw)
 
 #### `pipeline/steps/embed_and_index.py` [NEW]
 - SageMaker Processing script
-- Reads `S3 Silver /corpus/` → chunk → embed → write to S3 Vectors
-- Calls `ingest_to_vectors.py` logic (idempotent)
+- Reads `S3 Silver /corpus/` → chunk → embed → write FAISS index to S3
+- Calls `ingest_to_faiss.py` logic (idempotent)
 - Logs vector count to SageMaker Experiments
 
 ### Sub-phase 3b-ii: Training Pair Synthesis Step (Flow B)
@@ -293,7 +292,7 @@ S3 Bronze (raw)
 - `sagemaker.workflow.pipeline.Pipeline` definition
 - Steps in order:
   1. `ProcessingStep` — runs `preprocessing.py` via `SKLearnProcessor` (splits Bronze → Silver corpus + training)
-  2. `ProcessingStep` — runs `embed_and_index.py` (Flow A: corpus → S3 Vectors) ┐ run in parallel
+  2. `ProcessingStep` — runs `embed_and_index.py` (Flow A: corpus → FAISS-on-S3) ┐ run in parallel
   3. `ProcessingStep` — runs `synthesize_pairs.py` (Flow B: chunks → Claude → Gold Q&A) ┘
   4. `TrainingStep` — runs `train.py` via `HuggingFace` estimator (g5.2xlarge Spot) — reads from Gold Q&A
   5. `ProcessingStep` — runs `evaluate.py`
@@ -321,7 +320,7 @@ S3 Bronze (raw)
   - `MemorySizeInMB=6144`
   - `MaxConcurrency=5`
 - Endpoint name: `chitrakatha-rag-serverless`
-- Custom **Container Environment**: injects `BEDROCK_KB_ID`, `S3_VECTOR_INDEX_ARN`
+- Custom **Container Environment**: injects `BEDROCK_KB_ID`, `S3_FAISS_INDEX_PREFIX`
 
 #### `serving/inference.py` [REFAC]
 - Model server entry point (`model_fn`, `predict_fn`)
@@ -419,7 +418,7 @@ sagemaker-project-chitrakatha/
 │       ├── variables.tf
 │       ├── kms.tf
 │       ├── s3.tf
-│       ├── s3_vectors.tf
+│       ├── faiss_index.tf
 │       ├── iam.tf
 │       ├── secrets.tf
 │       ├── cloudwatch.tf
@@ -434,7 +433,7 @@ sagemaker-project-chitrakatha/
 │       ├── ingestion/
 │       │   ├── chunker.py         # Sliding-window chunker (15% overlap)
 │       │   ├── embedder.py        # Bedrock Titan Embed v2 wrapper
-│       │   └── vector_writer.py   # S3 Vectors writer
+│       │   └── faiss_writer.py   # FAISS index writer (S3-backed)
 │       └── monitoring/
 │           ├── lineage.py         # SageMaker Lineage API helpers
 │           └── experiments.py     # SageMaker Experiments logger
@@ -444,7 +443,7 @@ sagemaker-project-chitrakatha/
 │   ├── requirements.txt
 │   └── steps/
 │       ├── preprocessing.py       # Step 1: Bronze → Silver (corpus + training split)
-│       ├── embed_and_index.py     # Step 2a: Flow A — corpus → S3 Vectors
+│       ├── embed_and_index.py     # Step 2a: Flow A — corpus → FAISS-on-S3
 │       ├── synthesize_pairs.py    # Step 2b: Flow B — chunks → Claude → Gold Q&A
 │       ├── train.py               # Step 3: QLoRA fine-tune on Gold Q&A
 │       └── evaluate.py            # Step 4: ROUGE-L, BERTScore, cross-lingual
@@ -459,7 +458,7 @@ sagemaker-project-chitrakatha/
 ├── data/
 │   └── scripts/
 │       ├── upload_to_bronze.py          # Drop raw data → S3 Bronze
-│       ├── ingest_to_vectors.py          # Flow A: Silver corpus → S3 Vectors
+│       ├── ingest_to_faiss.py          # Flow A: Silver corpus → FAISS-on-S3
 │       └── synthesize_training_pairs.py  # Flow B: Silver chunks → Claude → Gold Q&A
 │
 └── tests/
@@ -467,7 +466,7 @@ sagemaker-project-chitrakatha/
     │   ├── test_chunker.py        # Sliding window logic, Devanagari preservation
     │   ├── test_embedder.py       # Mocked Bedrock calls (moto)
     │   ├── test_preprocessor.py   # Unicode normalization, dedup
-    │   ├── test_vector_writer.py  # Mocked S3 Vectors (moto)
+    │   ├── test_faiss_writer.py  # Mocked FAISS/S3 (moto)
     │   └── test_lambda_handler.py # Pydantic validation, language detection
     └── integration/
         └── test_pipeline_dag.py   # Validates pipeline step definitions (no AWS calls)

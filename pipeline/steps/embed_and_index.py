@@ -35,7 +35,7 @@ from chitrakatha.config import Settings
 from chitrakatha.exceptions import BedrockEmbeddingError, DataIngestionError, S3VectorError
 from chitrakatha.ingestion.chunker import chunk_text
 from chitrakatha.ingestion.embedder import embed_chunks
-from chitrakatha.ingestion.vector_writer import write_vectors
+from chitrakatha.ingestion.faiss_writer import write_vectors
 from chitrakatha.monitoring.experiments import log_metrics
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def _load_existing_vector_ids(settings: Settings) -> set[str]:
     Returns empty set if the index doesn't exist yet.
     """
     s3 = boto3.client("s3", region_name=settings.aws_region)
-    prefix = settings.s3_vector_index_name.strip("/")
+    prefix = settings.s3_faiss_index_prefix.strip("/")
     existing: set[str] = set()
     
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -112,7 +112,7 @@ def run(settings: Settings, experiment_run_name: str | None = None) -> int:
             written = write_vectors(
                 chunk_embeddings,
                 bucket_name=settings.s3_vectors_bucket,
-                index_name=settings.s3_vector_index_name,
+                index_name=settings.s3_faiss_index_prefix,
                 aws_region=settings.aws_region,
                 extra_metadata={
                     "language": language,

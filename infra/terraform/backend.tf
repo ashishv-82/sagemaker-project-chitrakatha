@@ -11,7 +11,7 @@ terraform {
   # NOTE: The bucket-name must exist before you can run `terraform init`.
   # For your first run, you should create the bucket MANUALLY or remove this
   # block until the first apply finishes.
-  
+
   backend "s3" {
     bucket         = "project-chitrakatha-tf-state-54c4cc5f"
     key            = "dev/terraform.tfstate"

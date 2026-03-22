@@ -63,26 +63,6 @@ variable "alarm_sns_topic_arn" {
   default     = ""
 }
 
-variable "s3_vector_dimension" {
-  description = <<-EOT
-    Dimensionality of the embedding vectors stored in the S3 Vectors index.
-    Must match the output size of the embedding model.
-    Titan Embed Text v2 produces 1536-dimensional vectors.
-  EOT
-  type        = number
-  default     = 1536
-}
-
-variable "s3_vector_metric" {
-  description = "Distance metric used for nearest-neighbour search in the S3 Vectors index."
-  type        = string
-  default     = "cosine"
-
-  validation {
-    condition     = contains(["cosine", "euclidean", "dot_product"], var.s3_vector_metric)
-    error_message = "s3_vector_metric must be one of: cosine, euclidean, dot_product."
-  }
-}
 
 variable "noncurrent_version_expiry_days" {
   description = "Days after which non-current S3 object versions are permanently deleted."

@@ -39,7 +39,7 @@ META_FILENAME = "metadata.pkl"
 
 # Passed down by deploy_endpoint.py
 S3_VECTORS_BUCKET = os.environ.get("S3_VECTORS_BUCKET")
-S3_VECTOR_INDEX_NAME = os.environ.get("S3_VECTOR_INDEX_NAME")
+S3_FAISS_INDEX_PREFIX = os.environ.get("S3_FAISS_INDEX_PREFIX")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 
 # Module-level cache for the FAISS index and metadata
@@ -97,11 +97,11 @@ def _load_index() -> tuple[Any, dict[int, Any]]:
     if _INDEX_CACHE["index"] is not None:
         return _INDEX_CACHE["index"], _INDEX_CACHE["metadata"]
 
-    if not S3_VECTORS_BUCKET or not S3_VECTOR_INDEX_NAME:
-        raise ValueError("S3_VECTORS_BUCKET or S3_VECTOR_INDEX_NAME not configured.")
+    if not S3_VECTORS_BUCKET or not S3_FAISS_INDEX_PREFIX:
+        raise ValueError("S3_VECTORS_BUCKET or S3_FAISS_INDEX_PREFIX not configured.")
 
     s3 = boto3.client("s3", region_name=AWS_REGION)
-    prefix = S3_VECTOR_INDEX_NAME.strip("/")
+    prefix = S3_FAISS_INDEX_PREFIX.strip("/")
 
     logger.info("Downloading FAISS index from s3://%s/%s", S3_VECTORS_BUCKET, prefix)
     

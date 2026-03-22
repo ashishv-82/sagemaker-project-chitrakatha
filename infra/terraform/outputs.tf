@@ -63,7 +63,7 @@ output "s3_gold_bucket_arn" {
 }
 
 output "s3_vectors_bucket" {
-  description = "Name of the S3 Vectors bucket. Use as `VECTORS_BUCKET` env var in vector_writer.py and inference.py."
+  description = "Name of the S3 Vectors bucket. Use as `VECTORS_BUCKET` env var in faiss_writer.py and inference.py."
   value       = aws_s3_bucket.vectors.id
 }
 
@@ -72,14 +72,9 @@ output "s3_vectors_bucket_arn" {
   value       = aws_s3_bucket.vectors.arn
 }
 
-output "s3_vector_index_arn" {
-  description = "ARN of the S3 Vectors index. Injected into the serverless endpoint environment as `S3_VECTOR_INDEX_ARN`."
-  value       = local.s3_vector_index_arn
-}
-
-output "s3_vector_index_name" {
-  description = "Name of the S3 Vectors index. Used in boto3 s3vectors API calls."
-  value       = local.s3_vector_index_name
+output "s3_faiss_index_prefix" {
+  description = "Prefix of the FAISS index stored in S3. Injected into the serverless endpoint environment as `S3_FAISS_INDEX_PREFIX`."
+  value       = local.s3_faiss_index_prefix
 }
 
 output "secret_arn" {

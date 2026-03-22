@@ -65,8 +65,8 @@
 | `src/chitrakatha/ingestion/__init__.py` | ✅ Done | Package marker |
 | `src/chitrakatha/ingestion/chunker.py` | ✅ Done | Sliding-window 15% overlap, NFC normalization, Devanagari-safe |
 | `src/chitrakatha/ingestion/embedder.py` | ✅ Done | Titan Embed v2, batch 25, 3× retry with exponential backoff |
-| `src/chitrakatha/ingestion/vector_writer.py` | ✅ Done | Refactored: FAISS-on-S3 indexer (working production RAG) |
-| `data/scripts/ingest_to_vectors.py` | ✅ Done | Flow A orchestration: Silver /corpus/ → FAISS-on-S3 |
+| `src/chitrakatha/ingestion/faiss_writer.py` | ✅ Done | Refactored: FAISS-on-S3 indexer (working production RAG) |
+| `data/scripts/ingest_to_faiss.py` | ✅ Done | Flow A orchestration: Silver /corpus/ → FAISS-on-S3 |
 | `data/scripts/synthesize_training_pairs.py` | ✅ Done | Flow B RAFT: golden + 2 distractors + CoT → Gold JSONL |
 
 ---
@@ -125,4 +125,4 @@
 |---|---|---|
 | `tests/unit/test_chunker.py` | ✅ Done | 10 tests: basic, Devanagari, overlap, typed output, error cases |
 | `tests/unit/test_embedder.py` | ✅ Done | 9 tests: batching, dim check, retry, Devanagari passthrough |
-| `tests/unit/test_vector_writer.py` | ✅ Done | 8 tests: idempotency, metadata, batch split, error propagation |
+| `tests/unit/test_faiss_writer.py` | ✅ Done | 8 tests: idempotency, metadata, batch split, error propagation |

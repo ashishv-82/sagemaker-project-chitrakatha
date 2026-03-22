@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     s3_gold_bucket: str = Field(..., alias="S3_GOLD_BUCKET")
     s3_vectors_bucket: str = Field(..., alias="S3_VECTORS_BUCKET")
 
-    # -- S3 Vectors index (required) ------------------------------------------
-    s3_vector_index_name: str = Field(..., alias="S3_VECTOR_INDEX_NAME")
+    # -- FAISS Index (required) ------------------------------------------
+    s3_faiss_index_prefix: str = Field(..., alias="S3_FAISS_INDEX_PREFIX")
 
     # -- KMS & IAM (required) -------------------------------------------------
     kms_key_arn: str = Field(..., alias="KMS_KEY_ARN")

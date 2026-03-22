@@ -21,14 +21,7 @@ terraform {
     }
   }
 
-  # Remote state: values supplied via -backend-config flags or CI env vars.
-  # Bootstrap: run `scripts/bootstrap_backend.sh` once before `terraform init`.
-  backend "s3" {
-    key     = "chitrakatha/terraform.tfstate"
-    encrypt = true
-    # bucket, region, and dynamodb_table must be provided via -backend-config
-    # or TF_BACKEND_* environment variables in CI — never hardcode here.
-  }
+
 }
 
 provider "aws" {
