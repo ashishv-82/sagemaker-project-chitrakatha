@@ -46,9 +46,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
 )
-from trl import SFTTrainer
+from trl import SFTConfig, SFTTrainer
 
 from chitrakatha.monitoring.experiments import log_hyperparameters, log_metrics
 
@@ -201,7 +200,7 @@ def main() -> None:
 
     train_ds, eval_ds = _load_gold_dataset()
 
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=str(CHECKPOINT_DIR),
         num_train_epochs=NUM_EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
@@ -219,6 +218,9 @@ def main() -> None:
         logging_steps=50,
         report_to="none",  # We handle Experiments logging ourselves.
         dataloader_num_workers=4,
+        dataset_text_field="text",
+        max_seq_length=MAX_SEQ_LENGTH,
+        packing=False,
     )
 
     trainer = SFTTrainer(
@@ -226,9 +228,6 @@ def main() -> None:
         processing_class=tokenizer,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        dataset_text_field="text",
-        max_seq_length=MAX_SEQ_LENGTH,
-        packing=False,
         args=training_args,
     )
 
