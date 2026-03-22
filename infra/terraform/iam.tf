@@ -99,7 +99,7 @@ resource "aws_iam_role_policy" "sagemaker_kms" {
 }
 
 ###############################################################################
-# Inline Policy: Bedrock (scoped to Titan Embed v2 and Claude 3 Haiku ARNs)
+# Inline Policy: Bedrock (scoped to Titan Embed v2 and Claude 3.5 Sonnet v2 ARNs)
 ###############################################################################
 
 data "aws_iam_policy_document" "sagemaker_bedrock" {
@@ -113,8 +113,8 @@ data "aws_iam_policy_document" "sagemaker_bedrock" {
     resources = [
       # Titan Embed Text v2 — used for corpus embedding (Flow A) and query embedding.
       "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0",
-      # Claude 3 Haiku — directly available in ap-southeast-2, no inference profile required.
-      "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+      # Claude 3.5 Sonnet v2 — use case form submitted, marketplace permissions granted.
+      "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
     ]
   }
 
