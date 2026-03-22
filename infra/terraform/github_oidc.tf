@@ -89,6 +89,24 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     ]
   }
 
+  statement {
+    sid    = "TerraformStateBackend"
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+      "s3:GetObject",
+      "s3:PutObject",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem"
+    ]
+    resources = [
+      "arn:aws:s3:::project-chitrakatha-tf-state-*",
+      "arn:aws:s3:::project-chitrakatha-tf-state-*/*",
+      "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/project-chitrakatha-tf-lock"
+    ]
+  }
+
   # Allow GitHub Actions to "Pass" the SageMaker role to the service.
   statement {
     sid       = "IAMPassRoleToSageMaker"
