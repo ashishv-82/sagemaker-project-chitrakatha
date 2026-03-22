@@ -39,9 +39,7 @@ import os
 import random
 from pathlib import Path
 
-import boto3
 import torch
-from botocore.exceptions import BotoCoreError, ClientError
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
@@ -62,7 +60,7 @@ MODEL_OUTPUT_DIR = Path(os.environ.get("SM_MODEL_DIR", "/opt/ml/model"))
 CHECKPOINT_DIR = Path(os.environ.get("SM_OUTPUT_DATA_DIR", "/opt/ml/output/data")) / "checkpoints"
 
 # Hyperparameters (overridable via SageMaker TrainingJob hyperparameters dict).
-MODEL_ID = os.environ.get("MODEL_ID", "meta-llama/Llama-3.2-3B-Instruct")
+MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")
 LORA_R = int(os.environ.get("LORA_R", "16"))
 LORA_ALPHA = int(os.environ.get("LORA_ALPHA", "32"))
 LORA_DROPOUT = float(os.environ.get("LORA_DROPOUT", "0.05"))
@@ -72,26 +70,6 @@ LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "2e-4"))
 MAX_SEQ_LENGTH = int(os.environ.get("MAX_SEQ_LENGTH", "2048"))
 EVAL_SPLIT = float(os.environ.get("EVAL_SPLIT", "0.10"))
 EXPERIMENT_RUN = os.environ.get("SAGEMAKER_EXPERIMENT_RUN", "")
-HF_TOKEN_SECRET_NAME = os.environ.get("HF_TOKEN_SECRET_NAME", "chitrakatha/huggingface_token")
-
-
-def _get_hf_token() -> str:
-    """Read the HuggingFace access token from AWS Secrets Manager.
-
-    Returns:
-        HuggingFace token string.
-
-    Raises:
-        RuntimeError: If the secret cannot be retrieved.
-    """
-    region = os.environ.get("AWS_REGION", "ap-southeast-2")
-    client = boto3.client("secretsmanager", region_name=region)
-    try:
-        response = client.get_secret_value(SecretId=HF_TOKEN_SECRET_NAME)
-        secret = json.loads(response["SecretString"])
-        return secret["token"]
-    except (BotoCoreError, ClientError, KeyError) as exc:
-        raise RuntimeError(f"Cannot retrieve HuggingFace token from '{HF_TOKEN_SECRET_NAME}': {exc}") from exc
 
 
 def _build_raft_prompt(record: dict) -> str:
@@ -194,7 +172,7 @@ def main() -> None:
         bnb_4bit_use_double_quant=True,
     )
 
-    hf_token = _get_hf_token()
+    # Qwen2.5 is Apache 2.0 — no token or EULA required.
     logger.info("Downloading base model from HuggingFace Hub: %s", MODEL_ID)
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -202,11 +180,10 @@ def main() -> None:
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=False,
-        token=hf_token,
     )
     model = prepare_model_for_kbit_training(model)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=False, token=hf_token)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=False)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 

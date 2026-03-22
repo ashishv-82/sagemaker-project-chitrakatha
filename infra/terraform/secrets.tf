@@ -17,23 +17,6 @@
 #   - KMS encryption: uses the project CMK, not the default Secrets Manager key.
 ###############################################################################
 
-resource "aws_secretsmanager_secret" "huggingface_token" {
-  name        = "${var.project_name}/huggingface_token"
-  description = "HuggingFace access token for downloading Llama 3.2 3B Instruct weights in train.py. Inject real value via: aws secretsmanager put-secret-value --secret-id chitrakatha/huggingface_token --secret-string '{\"token\":\"hf_xxx\"}'"
-
-  kms_key_id               = aws_kms_key.chitrakatha.arn
-  recovery_window_in_days  = 30
-}
-
-resource "aws_secretsmanager_secret_version" "huggingface_token_placeholder" {
-  secret_id     = aws_secretsmanager_secret.huggingface_token.id
-  secret_string = jsonencode({ token = "REPLACE_ME_WITH_HF_TOKEN" })
-
-  lifecycle {
-    ignore_changes = [secret_string]
-  }
-}
-
 resource "aws_secretsmanager_secret" "synthetic_data_api_key" {
   name        = "${var.project_name}/synthetic_data_api_key"
   description = "API key used by synthesize_training_pairs.py when calling Bedrock Claude for RAFT data generation. Real value injected by CI/CD post-deployment."

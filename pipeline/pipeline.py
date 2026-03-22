@@ -25,9 +25,9 @@ Pipeline parameters (overridable per execution):
     ModelApprovalStatus — default: PendingManualApproval
 
 Base model:
-    meta-llama/Llama-3.2-3B-Instruct (HuggingFace Hub)
-    Token read from Secrets Manager (chitrakatha/huggingface_token) at training time.
+    Qwen/Qwen2.5-3B-Instruct (HuggingFace Hub, Apache 2.0 — no token required)
     JumpStart does not support Llama 3.2 fine-tuning in ap-southeast-2.
+    Qwen2.5 has stronger multilingual (Hindi) capability than Llama 3.2 at 3B scale.
 
 Constraints:
     - All ARNs and bucket names from environment (Terraform outputs) — no hardcoding.
@@ -328,7 +328,6 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         },
         environment={
             "SAGEMAKER_EXPERIMENT_RUN": "chitrakatha-pipeline-run",
-            "HF_TOKEN_SECRET_NAME": "chitrakatha/huggingface_token",
         },
         output_path=f"s3://{GOLD_BUCKET}/model-artifacts/",
         sagemaker_session=sm_session,
