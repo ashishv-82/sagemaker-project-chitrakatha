@@ -215,11 +215,18 @@ data "aws_iam_policy_document" "sagemaker_control_plane" {
       "sagemaker:DescribePipeline",
       "sagemaker:StartPipelineExecution",
       "sagemaker:DescribePipelineExecution",
-      "sagemaker:ListPipelineExecutionSteps"
+      "sagemaker:ListPipelineExecutionSteps",
+      # Tagging: required when CreateProcessingJob/CreateTrainingJob is called
+      # with tags (which SageMaker Pipelines always does automatically).
+      "sagemaker:AddTags"
     ]
-    # Scope to resources prefixed with the project name where AWS supports it.
+    # Two resource patterns are required:
+    # 1. chitrakatha-* — resources we explicitly name (endpoints, models, etc.)
+    # 2. pipelines-*   — processing/training jobs auto-named by the pipeline
+    #                    orchestrator (e.g. pipelines-<execid>-Preprocessing-<hash>)
     resources = [
-      "arn:aws:sagemaker:${var.aws_region}:${local.account_id}:*/${var.project_name}-*"
+      "arn:aws:sagemaker:${var.aws_region}:${local.account_id}:*/${var.project_name}-*",
+      "arn:aws:sagemaker:${var.aws_region}:${local.account_id}:*/pipelines-*",
     ]
   }
 }
