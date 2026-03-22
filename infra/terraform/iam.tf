@@ -67,6 +67,23 @@ data "aws_iam_policy_document" "sagemaker_s3" {
       "${aws_s3_bucket.vectors.arn}/*",
     ]
   }
+
+  # JumpStart private cache bucket — stores EULA-gated models (Llama etc.).
+  # Separate from the public cache; requires explicit read access.
+  statement {
+    sid    = "S3ReadJumpStartPrivateCache"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::jumpstart-private-cache-prod-${var.aws_region}",
+      "arn:aws:s3:::jumpstart-private-cache-prod-${var.aws_region}/*",
+      "arn:aws:s3:::jumpstart-cache-prod-${var.aws_region}",
+      "arn:aws:s3:::jumpstart-cache-prod-${var.aws_region}/*",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "sagemaker_s3" {
