@@ -119,10 +119,31 @@
 
 ---
 
-## Unit Tests (Phase 2) ✅
+## Unit Tests ✅
 
 | File | Status | Notes |
 |---|---|---|
 | `tests/unit/test_chunker.py` | ✅ Done | 10 tests: basic, Devanagari, overlap, typed output, error cases |
 | `tests/unit/test_embedder.py` | ✅ Done | 9 tests: batching, dim check, retry, Devanagari passthrough |
 | `tests/unit/test_faiss_writer.py` | ✅ Done | 8 tests: idempotency, metadata, batch split, error propagation |
+| `tests/unit/test_preprocessor.py` | ✅ Done | 14 tests: language detection, VTT parsing, dedup, process() full flow, error propagation |
+| `tests/unit/test_lambda_handler.py` | ✅ Done | 12 tests: valid EN/HI queries, language detection, 400/500 error paths, direct invocation |
+
+---
+
+## Fixes & Improvements (post-Phase 6)
+
+| Change | File(s) | Notes |
+|---|---|---|
+| Add `BedrockSynthesisError` | `src/chitrakatha/exceptions.py`, `data/scripts/synthesize_training_pairs.py`, `pipeline/steps/synthesize_pairs.py` | Separate exception for Claude synthesis failures vs. Titan embedding failures; fixed in pipeline step too |
+| FAISS index size guard | `src/chitrakatha/ingestion/faiss_writer.py` | Logs warning when index exceeds 50k vectors (cold-start risk threshold) |
+| Switch to SageMaker JumpStart (Llama 3.2 3B) | `pipeline/pipeline.py`, `pipeline/steps/train.py` | Replaced `HuggingFace` estimator with `JumpStartEstimator` (`meta-textgeneration-llama-3-2-3b-instruct`); weights fetched via explicit `"model"` training input channel using `model_uris.retrieve()` — no HuggingFace token needed |
+| Processing container package fix | `pipeline/pipeline.py` | Added `_make_processing_source_dir()` helper; all `ProcessingStep`s now use `get_run_args(source_dir=...)` to bundle `chitrakatha` package alongside the step script — fixes `ModuleNotFoundError` |
+| Training container package fix | `pipeline/pipeline.py` | Added `_make_training_source_dir()` helper; copies full `pipeline/steps/` + `chitrakatha/` package into estimator `source_dir` — fixes `from chitrakatha.monitoring...` in `train.py` |
+| Switch to real-time endpoint + scale-to-zero | `serving/deploy_endpoint.py`, `serving/lambda/handler.py` | Replaced `ServerlessInferenceConfig` with real-time `ml.g4dn.xlarge`; App Auto Scaling `MinCapacity=0` enables scale-to-zero; Lambda returns HTTP 503 + `Retry-After: 300` when endpoint is warming up |
+| Instance types aligned to 3B model | `pipeline/pipeline.py` | Training + eval both use `ml.g4dn.xlarge` (16 GB VRAM, NVIDIA T4) instead of `ml.g5.2xlarge`; 3B model in 4-bit uses ~2.5 GB VRAM — significant cost reduction per run |
+| Container env vars | `pipeline/pipeline.py`, `.github/workflows/ct.yml` | Added `_CONTAINER_ENV` dict injected into all processors so `Settings()` can resolve `S3_VECTORS_BUCKET`, `S3_FAISS_INDEX_PREFIX`, etc.; ct.yml now fetches all required terraform outputs |
+| LoRA adapter merge | `pipeline/steps/train.py` | Added `trainer.model.merge_and_unload()` before `save_pretrained()` — without this, serverless endpoint serves unmodified base model |
+| inference.py GPU/CPU branch | `serving/inference.py` | GPU path: 4-bit NF4 quantization (~4 GB VRAM); CPU path: bfloat16 with OOM warning (8B model needs real-time GPU endpoint in production) |
+| Eval processor instance fix | `pipeline/pipeline.py` | Changed `eval_processor` from `ml.m5.2xlarge` (CPU, hours) to `ml.g5.2xlarge` (GPU, ~20 min) since evaluate.py loads full 8B model |
+| Embed/synthesize processor image fix | `pipeline/pipeline.py` | Changed `embed_processor` from GPU Docker image to CPU image — Flow A/B only call Bedrock APIs, no local GPU needed |

@@ -6,7 +6,7 @@
 
 [![AWS](https://img.shields.io/badge/AWS-Serverless-orange?logo=amazonaws)](https://aws.amazon.com)
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)](https://python.org)
-[![Scale to Zero](https://img.shields.io/badge/Cost-~%245%2Fmo%20baseline-green)](#cost-model)
+[![Scale to Zero](https://img.shields.io/badge/Cost-~%245%2Fmo%20idle-green)](#cost-model)
 
 ---
 
@@ -41,9 +41,9 @@ flowchart TD
     D --> F[("S3 Vectors<br/>(FAISS Index)")]
     E --> G[("S3 Gold<br/>Q&A JSONL")]
 
-    G -->|"QLoRA · Spot"| H["SageMaker Training<br/>Llama 3.1 8B"]
+    G -->|"QLoRA · Spot"| H["SageMaker Training<br/>Llama 3.2 3B"]
     H --> I[(Model Registry)]
-    I -->|approved| J[Serverless Endpoint]
+    I -->|approved| J["Real-time Endpoint<br/>(scale-to-zero)"]
 
     F --> J
     J --> K[Lambda Bridge]
@@ -59,8 +59,8 @@ flowchart TD
 |---|---|---|---|---|
 | 1 | **Titan Embed Text v2** | Amazon Bedrock | Converts text → 1536-dim vectors | Ingestion + every query |
 | 2 | **Claude 3.5 Sonnet** | Amazon Bedrock | Teacher: auto-generates bilingual **RAFT training data** (Q + golden doc + distractors + chain-of-thought) | Pipeline run only |
-| 3 | **Llama 3.1 8B Instruct** | HuggingFace (base) | Student: fine-tuned with QLoRA on Gold Q&A | Training only |
-| 4 | **Fine-tuned Llama 3.1 8B** | SageMaker (yours) | Serves user queries with RAG grounding | Always (serverless) |
+| 3 | **Llama 3.2 3B Instruct** | SageMaker JumpStart | Student: fine-tuned with QLoRA on Gold Q&A — weights fetched from AWS-managed S3, no HuggingFace token required | Training only |
+| 4 | **Fine-tuned Llama 3.2 3B** | SageMaker (yours) | Serves user queries with RAG grounding via real-time GPU endpoint (scale-to-zero) | On demand |
 
 ---
 
@@ -72,7 +72,7 @@ flowchart LR
     P --> FA["🅐 Flow A<br/>clean → embed → FAISS-on-S3"]
     P --> FB["🅑 Flow B<br/>clean → Claude → Q&A → train"]
     FA & FB --> M[Model Registry]
-    M -->|you approve| D["Serverless Endpoint<br/>auto-deployed"]
+    M -->|you approve| D["Real-time Endpoint<br/>auto-deployed (scale-to-zero)"]
 ```
 
 > **You never write Q&A pairs manually.** The pipeline handles all data transformation.
@@ -88,8 +88,8 @@ flowchart LR
 | **Vector Store** | S3 (FAISS Index) | Production-ready serverless RAG (Scale-to-Zero) |
 | **Embeddings** | Bedrock Titan Embed v2 | Serverless, 1536-dim, multilingual |
 | **Teacher Model** | Bedrock Claude 3.5 Sonnet | Auto-synthesises bilingual training data |
-| **Fine-tuning** | QLoRA (PEFT + TRL) on SageMaker | Efficient 4-bit tuning using **RAFT** on Spot instances |
-| **Serving** | SageMaker Serverless Inference | Zero cost when idle |
+| **Fine-tuning** | QLoRA (PEFT + TRL) on SageMaker | Efficient 4-bit tuning using **RAFT** on Spot instances (ml.g4dn.xlarge) |
+| **Serving** | SageMaker Real-time Inference + App Auto Scaling | GPU endpoint (ml.g4dn.xlarge); scales to 0 instances when idle |
 | **Bridge** | AWS Lambda + API Gateway | Lightweight HTTP interface |
 | **IaC** | Terraform | Fully reproducible; outputs drive all config |
 | **CI/CD** | GitHub Actions | Lint, test, plan, and trigger pipeline |
@@ -103,11 +103,15 @@ flowchart LR
 | Component | Cost | Notes |
 |---|---|---|
 | S3 storage | ~$0.50/mo | Versioned; lifecycle policies archive old data |
+| KMS CMK | ~$1.00/mo | Customer-managed key + API calls |
+| CloudWatch Dashboard | ~$3.00/mo | 3 alarms + 1 dashboard |
+| Secrets Manager | ~$0.40/mo | 1 secret |
 | Bedrock embeddings | ~$0.10/run | Titan Embed v2: $0.00002/1K tokens |
 | Bedrock synthesis | ~$1–3/run | Claude 3.5 Sonnet per pipeline execution |
-| SageMaker training | ~$1–3/run | g5.2xlarge Spot (~$1.2/hr); typically 1-2hr |
-| Serverless endpoint | $0 idle | Pay per invocation only |
-| **Baseline monthly** | **~$5** | When not actively retraining |
+| SageMaker training | ~$0.50–1/run | g4dn.xlarge Spot (~$0.22/hr); 3B model ~30-45 min |
+| SageMaker evaluation | ~$0.15–0.30/run | g4dn.xlarge Spot; 3B model evaluates in ~10 min |
+| Real-time endpoint | $0 idle | Scales to 0 via App Auto Scaling; ~$0.74/hr when active |
+| **Baseline monthly** | **~$5** | When endpoint is idle and not actively retraining |
 
 ---
 

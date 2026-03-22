@@ -39,7 +39,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from chitrakatha.config import Settings
-from chitrakatha.exceptions import BedrockEmbeddingError, DataIngestionError
+from chitrakatha.exceptions import BedrockSynthesisError, DataIngestionError
 from chitrakatha.monitoring.experiments import log_metrics
 
 logger = logging.getLogger(__name__)
@@ -106,16 +106,16 @@ def _call_claude(
 
         except json.JSONDecodeError as exc:
             if attempt == _MAX_RETRIES:
-                raise BedrockEmbeddingError("Claude returned invalid JSON after retries.") from exc
+                raise BedrockSynthesisError("Claude returned invalid JSON after retries.") from exc
 
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
             if code in {"ThrottlingException", "ServiceUnavailableException"} and attempt < _MAX_RETRIES:
                 time.sleep(2.0 * (2 ** (attempt - 1)))
                 continue
-            raise BedrockEmbeddingError(f"Bedrock error [{code}]: {exc}") from exc
+            raise BedrockSynthesisError(f"Bedrock error [{code}]: {exc}") from exc
 
-    raise BedrockEmbeddingError("Claude synthesis failed after all retries.")
+    raise BedrockSynthesisError("Claude synthesis failed after all retries.")
 
 
 def run(settings: Settings, experiment_run_name: str | None = None) -> int:
@@ -173,7 +173,7 @@ def run(settings: Settings, experiment_run_name: str | None = None) -> int:
 
         try:
             pairs = _call_claude(bedrock_client, golden["text"], distractor_texts, total_tokens)
-        except (BedrockEmbeddingError, DataIngestionError) as exc:
+        except (BedrockSynthesisError, DataIngestionError) as exc:
             logger.error("Chunk %d failed: %s", i, exc)
             errors += 1
             continue

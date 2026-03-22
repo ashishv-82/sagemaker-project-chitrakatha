@@ -21,9 +21,12 @@ Pipeline steps (in execution order):
     7.  register_model    — SageMaker Model Registry (PendingManualApproval)
 
 Pipeline parameters (overridable per execution):
-    InputDataUri    — S3 Bronze URI for this pipeline run
+    InputDataUri        — S3 Bronze URI for this pipeline run
     ModelApprovalStatus — default: PendingManualApproval
-    BaseModelId     — HuggingFace model ID for the base LLM
+
+Base model:
+    meta-textgeneration-llama-3-2-3b-instruct (SageMaker JumpStart)
+    Weights fetched from AWS-managed S3 — no HuggingFace token required.
 
 Constraints:
     - All ARNs and bucket names from environment (Terraform outputs) — no hardcoding.
@@ -36,11 +39,13 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import sagemaker
-from sagemaker.estimator import Estimator
-from sagemaker.huggingface import HuggingFace
+from sagemaker import model_uris
+from sagemaker.jumpstart.estimator import JumpStartEstimator
 from sagemaker.model import Model
 from sagemaker.processing import ProcessingInput, ProcessingOutput, ScriptProcessor
 from sagemaker.sklearn.processing import SKLearnProcessor
@@ -63,16 +68,62 @@ BRONZE_BUCKET = os.environ["BRONZE_BUCKET"]
 SILVER_BUCKET = os.environ["SILVER_BUCKET"]
 GOLD_BUCKET = os.environ["GOLD_BUCKET"]
 KMS_KEY_ARN = os.environ["KMS_KEY_ARN"]
+VECTORS_BUCKET = os.environ["VECTORS_BUCKET"]
+FAISS_INDEX_PREFIX = os.environ.get("FAISS_INDEX_PREFIX", "faiss-index")
+
 PIPELINE_NAME = "chitrakatha-mlops-pipeline"
+
+# SageMaker JumpStart model ID — weights are fetched from AWS-managed S3,
+# no HuggingFace account or token required.
+# Llama 3.2 3B: fits on ml.g4dn.xlarge (16 GB VRAM) in 4-bit (~2.5 GB),
+# and serves via a real-time GPU endpoint with App Auto Scaling (scale-to-zero).
+JUMPSTART_MODEL_ID = "meta-textgeneration-llama-3-2-3b-instruct"
 
 # Source directory for pipeline step scripts (relative to this file).
 STEPS_DIR = Path(__file__).parent / "steps"
+ROOT_DIR = Path(__file__).parent.parent
 
 # Resource tags applied to every SageMaker resource created by this pipeline.
 RESOURCE_TAGS = [
     {"Key": "Project", "Value": "Chitrakatha"},
     {"Key": "CostCenter", "Value": "MLOps-Research"},
 ]
+
+
+def _make_processing_source_dir(step_script: Path) -> str:
+    """Bundle a step script with the chitrakatha package into a temp directory.
+
+    SageMaker uploads the entire source_dir to S3 and sets it as the working
+    directory inside the processing container, so ``import chitrakatha`` resolves
+    without requiring a custom Docker image or a pip-install shell command.
+
+    Args:
+        step_script: Absolute path to the pipeline step .py file.
+
+    Returns:
+        Path string of the temp directory. SageMaker uploads it during
+        ``pipeline.upsert()``, so it must exist until that call returns.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="chitrakatha_proc_"))
+    shutil.copy2(step_script, tmp / step_script.name)
+    shutil.copytree(ROOT_DIR / "src" / "chitrakatha", tmp / "chitrakatha")
+    return str(tmp)
+
+
+def _make_training_source_dir() -> str:
+    """Bundle all pipeline/steps files with the chitrakatha package.
+
+    Unlike ``_make_processing_source_dir`` (which handles one script at a time),
+    the training container needs the full steps directory (requirements.txt,
+    train.py, etc.) plus chitrakatha so that ``from chitrakatha.monitoring...``
+    resolves inside the training job.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="chitrakatha_train_"))
+    for item in STEPS_DIR.iterdir():
+        if item.is_file():
+            shutil.copy2(item, tmp / item.name)
+    shutil.copytree(ROOT_DIR / "src" / "chitrakatha", tmp / "chitrakatha")
+    return str(tmp)
 
 
 def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
@@ -86,6 +137,19 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     """
     sm_session = session or PipelineSession(default_bucket=GOLD_BUCKET)
 
+    # Injected into every processing container so Settings() can resolve all
+    # required fields without hitting the environment of the calling machine.
+    _CONTAINER_ENV: dict[str, str] = {
+        "S3_BRONZE_BUCKET": BRONZE_BUCKET,
+        "S3_SILVER_BUCKET": SILVER_BUCKET,
+        "S3_GOLD_BUCKET": GOLD_BUCKET,
+        "S3_VECTORS_BUCKET": VECTORS_BUCKET,
+        "S3_FAISS_INDEX_PREFIX": FAISS_INDEX_PREFIX,
+        "KMS_KEY_ARN": KMS_KEY_ARN,
+        "SAGEMAKER_ROLE_ARN": ROLE_ARN,
+        "AWS_REGION": AWS_REGION,
+    }
+
     ###########################################################################
     # Pipeline Parameters
     ###########################################################################
@@ -97,10 +161,6 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     model_approval_status = ParameterString(
         name="ModelApprovalStatus",
         default_value="PendingManualApproval",
-    )
-    base_model_id = ParameterString(
-        name="BaseModelId",
-        default_value="meta-llama/Meta-Llama-3.1-8B-Instruct",
     )
 
     ###########################################################################
@@ -114,60 +174,66 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         instance_count=1,
         sagemaker_session=sm_session,
         tags=RESOURCE_TAGS,
+        env=_CONTAINER_ENV,
     )
 
     step_preprocessing = ProcessingStep(
         name="Preprocessing",
-        processor=sklearn_processor,
-        inputs=[
-            ProcessingInput(
-                source=input_data_uri,
-                destination="/opt/ml/processing/input/bronze",
-                input_name="bronze",
-            )
-        ],
-        outputs=[
-            ProcessingOutput(
-                output_name="corpus",
-                source="/opt/ml/processing/output/corpus",
-                destination=f"s3://{SILVER_BUCKET}/corpus/",
-            ),
-            ProcessingOutput(
-                output_name="training",
-                source="/opt/ml/processing/output/training",
-                destination=f"s3://{SILVER_BUCKET}/training/",
-            ),
-        ],
-        code=str(STEPS_DIR / "preprocessing.py"),
-        job_arguments=["--output-data-dir", "/opt/ml/processing/output"],
+        step_args=sklearn_processor.get_run_args(
+            code="preprocessing.py",
+            source_dir=_make_processing_source_dir(STEPS_DIR / "preprocessing.py"),
+            inputs=[
+                ProcessingInput(
+                    source=input_data_uri,
+                    destination="/opt/ml/processing/input/bronze",
+                    input_name="bronze",
+                )
+            ],
+            outputs=[
+                ProcessingOutput(
+                    output_name="corpus",
+                    source="/opt/ml/processing/output/corpus",
+                    destination=f"s3://{SILVER_BUCKET}/corpus/",
+                ),
+                ProcessingOutput(
+                    output_name="training",
+                    source="/opt/ml/processing/output/training",
+                    destination=f"s3://{SILVER_BUCKET}/training/",
+                ),
+            ],
+            arguments=["--output-data-dir", "/opt/ml/processing/output"],
+        ),
     )
 
     ###########################################################################
     # Step 2a: Embed & Index — Flow A (runs in parallel with Step 2b)
     ###########################################################################
 
+    # CPU image: Flow A/B only call Bedrock APIs — no GPU computation required.
     embed_processor = ScriptProcessor(
         role=ROLE_ARN,
-        image_uri=f"763104351884.dkr.ecr.{AWS_REGION}.amazonaws.com/pytorch-training:2.1.0-gpu-py310-cu121-ubuntu20.04-sagemaker",
+        image_uri=f"763104351884.dkr.ecr.{AWS_REGION}.amazonaws.com/pytorch-training:2.1.0-cpu-py310-ubuntu20.04-sagemaker",
         instance_type="ml.m5.2xlarge",
         instance_count=1,
         command=["python3"],
         sagemaker_session=sm_session,
         tags=RESOURCE_TAGS,
-        env={"SAGEMAKER_EXPERIMENT_RUN": "chitrakatha-pipeline-run"},
+        env={**_CONTAINER_ENV, "SAGEMAKER_EXPERIMENT_RUN": "chitrakatha-pipeline-run"},
     )
 
     step_embed = ProcessingStep(
         name="EmbedAndIndex",
-        processor=embed_processor,
-        inputs=[
-            ProcessingInput(
-                source=step_preprocessing.properties.ProcessingOutputConfig.Outputs["corpus"].S3Output.S3Uri,
-                destination="/opt/ml/processing/input/corpus",
-                input_name="corpus",
-            )
-        ],
-        code=str(STEPS_DIR / "embed_and_index.py"),
+        step_args=embed_processor.get_run_args(
+            code="embed_and_index.py",
+            source_dir=_make_processing_source_dir(STEPS_DIR / "embed_and_index.py"),
+            inputs=[
+                ProcessingInput(
+                    source=step_preprocessing.properties.ProcessingOutputConfig.Outputs["corpus"].S3Output.S3Uri,
+                    destination="/opt/ml/processing/input/corpus",
+                    input_name="corpus",
+                )
+            ],
+        ),
         depends_on=[step_preprocessing],
     )
 
@@ -177,22 +243,24 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_synthesize = ProcessingStep(
         name="SynthesizePairs",
-        processor=embed_processor,
-        inputs=[
-            ProcessingInput(
-                source=step_preprocessing.properties.ProcessingOutputConfig.Outputs["training"].S3Output.S3Uri,
-                destination="/opt/ml/processing/input/training",
-                input_name="training",
-            )
-        ],
-        outputs=[
-            ProcessingOutput(
-                output_name="gold",
-                source="/opt/ml/processing/output/gold",
-                destination=f"s3://{GOLD_BUCKET}/training-pairs/",
-            )
-        ],
-        code=str(STEPS_DIR / "synthesize_pairs.py"),
+        step_args=embed_processor.get_run_args(
+            code="synthesize_pairs.py",
+            source_dir=_make_processing_source_dir(STEPS_DIR / "synthesize_pairs.py"),
+            inputs=[
+                ProcessingInput(
+                    source=step_preprocessing.properties.ProcessingOutputConfig.Outputs["training"].S3Output.S3Uri,
+                    destination="/opt/ml/processing/input/training",
+                    input_name="training",
+                )
+            ],
+            outputs=[
+                ProcessingOutput(
+                    output_name="gold",
+                    source="/opt/ml/processing/output/gold",
+                    destination=f"s3://{GOLD_BUCKET}/training-pairs/",
+                )
+            ],
+        ),
         depends_on=[step_preprocessing],
     )
 
@@ -200,22 +268,31 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     # Step 3: Training — QLoRA + RAFT (Spot instance)
     ###########################################################################
 
-    huggingface_estimator = HuggingFace(
+    # Retrieve the S3 URI for the JumpStart pre-trained model weights.
+    # JumpStart only auto-delivers weights to SM_CHANNEL_MODEL when using its
+    # built-in training scripts. With a custom entry_point (train.py), we must
+    # pass the weights explicitly as a "model" training input channel.
+    jumpstart_model_uri = model_uris.retrieve(
+        model_id=JUMPSTART_MODEL_ID,
+        model_version="*",
+        model_scope="training",
+        sagemaker_session=sm_session,
+    )
+    logger.info("JumpStart model URI: %s", jumpstart_model_uri)
+
+    jumpstart_estimator = JumpStartEstimator(
+        model_id=JUMPSTART_MODEL_ID,
         entry_point="train.py",
-        source_dir=str(STEPS_DIR),
+        source_dir=_make_training_source_dir(),
         role=ROLE_ARN,
-        instance_type="ml.g5.2xlarge",
+        instance_type="ml.g4dn.xlarge",
         instance_count=1,
-        transformers_version="4.36",
-        pytorch_version="2.1",
-        py_version="py310",
         # Managed Spot Training — up to 70% cost reduction.
         use_spot_instances=True,
         max_wait=86400,  # 24 hours max total wait including spot interruption.
         max_run=7200,    # 2 hours max actual training time.
         checkpoint_s3_uri=f"s3://{GOLD_BUCKET}/checkpoints/",
         hyperparameters={
-            "MODEL_ID": base_model_id,
             "EPOCHS": "3",
             "BATCH_SIZE": "4",
             "LEARNING_RATE": "2e-4",
@@ -230,12 +307,19 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_train = TrainingStep(
         name="TrainQLoRARAFT",
-        estimator=huggingface_estimator,
+        estimator=jumpstart_estimator,
         inputs={
             "training": sagemaker.inputs.TrainingInput(
                 s3_data=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold"].S3Output.S3Uri,
                 content_type="application/x-ndjson",
-            )
+            ),
+            # Explicit model channel delivers JumpStart weights to SM_CHANNEL_MODEL
+            # so train.py loads from AWS-managed S3 without HuggingFace Hub access.
+            "model": sagemaker.inputs.TrainingInput(
+                s3_data=jumpstart_model_uri,
+                content_type="application/x-tar",
+                s3_data_type="S3Prefix",
+            ),
         },
         depends_on=[step_embed, step_synthesize],
     )
@@ -244,14 +328,18 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
     # Step 4: Evaluate — 3-suite evaluation
     ###########################################################################
 
+    # GPU instance: evaluate.py loads the merged 3B bfloat16 model (~6 GB) and
+    # runs inference across 3 evaluation suites. ml.g4dn.xlarge (16 GB VRAM)
+    # handles the 3B model comfortably and is cheaper than ml.g5.2xlarge.
     eval_processor = ScriptProcessor(
         role=ROLE_ARN,
         image_uri=f"763104351884.dkr.ecr.{AWS_REGION}.amazonaws.com/pytorch-training:2.1.0-gpu-py310-cu121-ubuntu20.04-sagemaker",
-        instance_type="ml.m5.2xlarge",
+        instance_type="ml.g4dn.xlarge",
         instance_count=1,
         command=["python3"],
         sagemaker_session=sm_session,
         tags=RESOURCE_TAGS,
+        env=_CONTAINER_ENV,
     )
 
     evaluation_report = PropertyFile(
@@ -262,27 +350,29 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_evaluate = ProcessingStep(
         name="EvaluateRAFT",
-        processor=eval_processor,
-        inputs=[
-            ProcessingInput(
-                source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
-                destination="/opt/ml/processing/input/model",
-                input_name="model",
-            ),
-            ProcessingInput(
-                source=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold"].S3Output.S3Uri,
-                destination="/opt/ml/processing/input/eval",
-                input_name="eval",
-            ),
-        ],
-        outputs=[
-            ProcessingOutput(
-                output_name="evaluation",
-                source="/opt/ml/processing/output/evaluation",
-                destination=f"s3://{GOLD_BUCKET}/evaluation/",
-            )
-        ],
-        code=str(STEPS_DIR / "evaluate.py"),
+        step_args=eval_processor.get_run_args(
+            code="evaluate.py",
+            source_dir=_make_processing_source_dir(STEPS_DIR / "evaluate.py"),
+            inputs=[
+                ProcessingInput(
+                    source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+                    destination="/opt/ml/processing/input/model",
+                    input_name="model",
+                ),
+                ProcessingInput(
+                    source=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold"].S3Output.S3Uri,
+                    destination="/opt/ml/processing/input/eval",
+                    input_name="eval",
+                ),
+            ],
+            outputs=[
+                ProcessingOutput(
+                    output_name="evaluation",
+                    source="/opt/ml/processing/output/evaluation",
+                    destination=f"s3://{GOLD_BUCKET}/evaluation/",
+                )
+            ],
+        ),
         property_files=[evaluation_report],
     )
 
@@ -332,7 +422,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     step_register = RegisterModel(
         name="RegisterChitrakathaModel",
-        estimator=huggingface_estimator,
+        estimator=jumpstart_estimator,
         model_data=step_train.properties.ModelArtifacts.S3ModelArtifacts,
         content_types=["application/json"],
         response_types=["application/json"],
@@ -357,7 +447,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
 
     pipeline = Pipeline(
         name=PIPELINE_NAME,
-        parameters=[input_data_uri, model_approval_status, base_model_id],
+        parameters=[input_data_uri, model_approval_status],
         steps=[
             step_preprocessing,
             step_embed,

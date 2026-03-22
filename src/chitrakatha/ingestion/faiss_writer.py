@@ -35,6 +35,12 @@ logger = logging.getLogger(__name__)
 INDEX_FILENAME: Final[str] = "index.faiss"
 META_FILENAME: Final[str] = "metadata.pkl"
 
+# At ~1536 float32 dims, each vector is ~6 KB. 50k vectors ≈ 300 MB in RAM.
+# Serverless endpoints have 6 GB memory, but cold-start download time becomes
+# significant beyond this threshold. Log a warning so operators know to consider
+# index sharding or upgrading to a persistent vector store.
+_WARN_VECTOR_COUNT: Final[int] = 50_000
+
 
 def _build_metadata(chunk: Chunk, extra: dict[str, str] | None = None) -> dict[str, str]:
     """Construct the metadata dict stored alongside each vector."""
@@ -133,6 +139,15 @@ def write_vectors(
         faiss.write_index(index, local_index_path)
         with open(local_meta_path, "wb") as f:
             pickle.dump(metadata_map, f)
+
+        if index.ntotal > _WARN_VECTOR_COUNT:
+            logger.warning(
+                "FAISS index has grown to %d vectors (threshold: %d). "
+                "Cold-start download time may exceed the 30s CloudWatch alarm threshold. "
+                "Consider sharding the index or migrating to a persistent vector store.",
+                index.ntotal,
+                _WARN_VECTOR_COUNT,
+            )
 
         try:
             s3.upload_file(local_index_path, bucket_name, f"{prefix}/{INDEX_FILENAME}")

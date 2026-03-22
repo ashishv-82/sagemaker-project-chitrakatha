@@ -253,11 +253,11 @@ resource "aws_iam_role" "lambda_execution" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 
   tags = {
-    Purpose = "Lambda bridge: API Gateway to SageMaker Serverless endpoint"
+    Purpose = "Lambda bridge: API Gateway to SageMaker real-time endpoint"
   }
 }
 
-# Allow Lambda to invoke only the Chitrakatha serverless endpoint.
+# Allow Lambda to invoke only the Chitrakatha real-time endpoint.
 data "aws_iam_policy_document" "lambda_invoke_endpoint" {
   statement {
     sid    = "InvokeChitrakathaEndpointOnly"

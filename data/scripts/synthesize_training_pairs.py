@@ -48,7 +48,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from chitrakatha.config import Settings
-from chitrakatha.exceptions import BedrockEmbeddingError, DataIngestionError
+from chitrakatha.exceptions import BedrockSynthesisError, DataIngestionError
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ def _call_claude(
         List of Q&A dicts parsed from Claude's JSON response.
 
     Raises:
-        BedrockEmbeddingError: After all retries or on non-retryable error.
+        BedrockSynthesisError: After all retries or on non-retryable error.
     """
     system_prompt = _RAFT_SYSTEM_PROMPT.format(n_pairs=n_pairs)
     user_message = _RAFT_USER_TEMPLATE.format(
@@ -160,7 +160,7 @@ def _call_claude(
         except json.JSONDecodeError as exc:
             logger.warning("Claude returned non-JSON output (attempt %d): %s", attempt, exc)
             if attempt == _MAX_RETRIES:
-                raise BedrockEmbeddingError(
+                raise BedrockSynthesisError(
                     "Claude failed to produce valid JSON after all retries."
                 ) from exc
 
@@ -171,11 +171,11 @@ def _call_claude(
                 logger.warning("Claude throttled (attempt %d). Retrying in %.1fs.", attempt, delay)
                 time.sleep(delay)
                 continue
-            raise BedrockEmbeddingError(
+            raise BedrockSynthesisError(
                 f"Bedrock Claude call failed [{code}]: {exc}"
             ) from exc
 
-    raise BedrockEmbeddingError("Claude synthesis failed after all retries.")
+    raise BedrockSynthesisError("Claude synthesis failed after all retries.")
 
 
 def _list_silver_training_chunks(
@@ -256,7 +256,7 @@ def run(settings: Settings) -> int:
                 golden_chunk=golden["text"],
                 distractor_chunks=distractor_texts,
             )
-        except (BedrockEmbeddingError, DataIngestionError) as exc:
+        except (BedrockSynthesisError, DataIngestionError) as exc:
             logger.error("Failed chunk %d ('%s'): %s", i, golden.get("source_document"), exc)
             errors += 1
             continue

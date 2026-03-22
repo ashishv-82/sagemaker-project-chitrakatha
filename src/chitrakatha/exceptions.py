@@ -13,7 +13,12 @@ class SageMakerPipelineError(ChitrakathaBaseError):
 
 
 class BedrockEmbeddingError(ChitrakathaBaseError):
-    """Raised when a Bedrock API call (Titan or Claude) fails."""
+    """Raised when a Bedrock Titan embedding API call fails."""
+    pass
+
+
+class BedrockSynthesisError(ChitrakathaBaseError):
+    """Raised when a Bedrock Claude synthesis (RAFT pair generation) call fails."""
     pass
 
 

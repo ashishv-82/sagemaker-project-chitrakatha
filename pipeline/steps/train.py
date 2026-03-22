@@ -19,7 +19,7 @@ RAFT prompt template (documents shuffled to prevent positional shortcuts):
     Answer: {answer}
 
 Hyperparameters:
-    model_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+    model_id: meta-llama/Llama-3.2-3B-Instruct
     lora_r: 16, lora_alpha: 32, lora_dropout: 0.05
     target_modules: [q_proj, v_proj]
     quantization: 4-bit NF4 (BitsAndBytesConfig)
@@ -60,7 +60,7 @@ MODEL_OUTPUT_DIR = Path(os.environ.get("SM_MODEL_DIR", "/opt/ml/model"))
 CHECKPOINT_DIR = Path(os.environ.get("SM_OUTPUT_DATA_DIR", "/opt/ml/output/data")) / "checkpoints"
 
 # Hyperparameters (overridable via SageMaker TrainingJob hyperparameters dict).
-MODEL_ID = os.environ.get("MODEL_ID", "meta-llama/Meta-Llama-3.1-8B-Instruct")
+MODEL_ID = os.environ.get("MODEL_ID", "meta-llama/Llama-3.2-3B-Instruct")
 LORA_R = int(os.environ.get("LORA_R", "16"))
 LORA_ALPHA = int(os.environ.get("LORA_ALPHA", "32"))
 LORA_DROPOUT = float(os.environ.get("LORA_DROPOUT", "0.05"))
@@ -70,6 +70,10 @@ LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "2e-4"))
 MAX_SEQ_LENGTH = int(os.environ.get("MAX_SEQ_LENGTH", "2048"))
 EVAL_SPLIT = float(os.environ.get("EVAL_SPLIT", "0.10"))
 EXPERIMENT_RUN = os.environ.get("SAGEMAKER_EXPERIMENT_RUN", "")
+
+# SageMaker JumpStart places the pre-downloaded base model weights here.
+# This eliminates any dependency on HuggingFace Hub or credentials at training time.
+SM_CHANNEL_MODEL = Path(os.environ.get("SM_CHANNEL_MODEL", "/opt/ml/input/data/model"))
 
 
 def _build_raft_prompt(record: dict) -> str:
@@ -171,16 +175,25 @@ def main() -> None:
         bnb_4bit_use_double_quant=True,
     )
 
-    logger.info("Loading base model: %s", MODEL_ID)
+    # Prefer JumpStart-supplied weights (SM_CHANNEL_MODEL) over downloading from Hub.
+    # JumpStart places the base model artifact at SM_CHANNEL_MODEL when the pipeline
+    # passes the model S3 URI as a training input channel — no external network calls.
+    if SM_CHANNEL_MODEL.exists() and any(SM_CHANNEL_MODEL.iterdir()):
+        model_source = str(SM_CHANNEL_MODEL)
+        logger.info("Loading base model from JumpStart channel: %s", model_source)
+    else:
+        model_source = MODEL_ID
+        logger.info("SM_CHANNEL_MODEL empty; falling back to HuggingFace Hub: %s", model_source)
+
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
+        model_source,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=False,
     )
     model = prepare_model_for_kbit_training(model)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=False)
+    tokenizer = AutoTokenizer.from_pretrained(model_source, trust_remote_code=False)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
@@ -232,10 +245,13 @@ def main() -> None:
     logger.info("Starting RAFT+QLoRA fine-tuning.")
     train_result = trainer.train()
 
-    # Save the final merged model to the SageMaker model directory.
-    trainer.save_model(str(MODEL_OUTPUT_DIR))
+    # Merge LoRA adapters into the base model weights before saving.
+    # inference.py loads with plain AutoModelForCausalLM (no PEFT), so the adapter
+    # must be merged or the endpoint will serve the unmodified base model.
+    merged_model = trainer.model.merge_and_unload()
+    merged_model.save_pretrained(str(MODEL_OUTPUT_DIR))
     tokenizer.save_pretrained(str(MODEL_OUTPUT_DIR))
-    logger.info("Model saved to %s.", MODEL_OUTPUT_DIR)
+    logger.info("Merged model saved to %s.", MODEL_OUTPUT_DIR)
 
     final_metrics = {
         "train_loss": round(train_result.training_loss, 4),

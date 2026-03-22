@@ -51,7 +51,8 @@
 - Custom exception hierarchy:
   - `ChitrakathaBaseError`
   - `SageMakerPipelineError(ChitrakathaBaseError)`
-  - `BedrockEmbeddingError(ChitrakathaBaseError)`
+  - `BedrockEmbeddingError(ChitrakathaBaseError)` — Titan embedding API failures
+  - `BedrockSynthesisError(ChitrakathaBaseError)` — Claude RAFT synthesis failures
   - `S3VectorError(ChitrakathaBaseError)`
   - `DataIngestionError(ChitrakathaBaseError)`
 
@@ -255,7 +256,7 @@ S3 Bronze (raw)
 
 #### `pipeline/steps/train.py` [NEW]
 - **QLoRA fine-tuning** using `trl.SFTTrainer` + `peft` with **RAFT prompt template**
-- Base model: `meta-llama/Meta-Llama-3.1-8B-Instruct` (or Mistral-7B as fallback)
+- Base model: `meta-llama/Meta-Llama-3.1-8B-Instruct` via **SageMaker JumpStart** (`meta-textgeneration-llama-3-1-8b-instruct`) — weights delivered to `SM_CHANNEL_MODEL`, no HuggingFace token required
 - LoRA config: `r=16`, `lora_alpha=32`, `target_modules=["q_proj","v_proj"]`, `lora_dropout=0.05`
 - Quantization: 4-bit `BitsAndBytesConfig` (NF4)
 - **RAFT prompt template** applied to every training example:
@@ -294,12 +295,12 @@ S3 Bronze (raw)
   1. `ProcessingStep` — runs `preprocessing.py` via `SKLearnProcessor` (splits Bronze → Silver corpus + training)
   2. `ProcessingStep` — runs `embed_and_index.py` (Flow A: corpus → FAISS-on-S3) ┐ run in parallel
   3. `ProcessingStep` — runs `synthesize_pairs.py` (Flow B: chunks → Claude → Gold Q&A) ┘
-  4. `TrainingStep` — runs `train.py` via `HuggingFace` estimator (g5.2xlarge Spot) — reads from Gold Q&A
+  4. `TrainingStep` — runs `train.py` via `JumpStartEstimator` (`meta-textgeneration-llama-3-1-8b-instruct`, g5.2xlarge Spot) — reads from Gold Q&A
   5. `ProcessingStep` — runs `evaluate.py`
   6. `ConditionStep` — if ROUGE-L ≥ 0.35 **AND** distractor_robustness ≥ 0.70 → proceed to registration
   7. `ModelStep` — creates SageMaker Model artifact
   8. `RegisterModel` — registers to Model Registry (approval status: `PendingManualApproval`)
-- Pipeline parameters: `InputDataUri`, `ModelApprovalStatus`, `BaseModelId`
+- Pipeline parameters: `InputDataUri`, `ModelApprovalStatus`
 - Tags: `Project: Chitrakatha`, `CostCenter: MLOps-Research`
 
 #### `pipeline/requirements.txt` [NEW]
@@ -496,14 +497,14 @@ graph LR
 > [!IMPORTANT]
 > **Before execution begins, please confirm the following decisions:**
 
-| # | Decision | Options | Recommendation |
+| # | Decision | Options | **Decision** |
 |---|---|---|---|
-| 1 | **Base LLM** | `meta-llama/Meta-Llama-3.1-8B-Instruct` vs `mistralai/Mistral-7B-Instruct-v0.3` | Llama 3.1 8B (better multilingual) |
-| 2 | **Training instance** | `ml.g5.2xlarge` (24GB VRAM, ~$1.215/hr Spot) vs `ml.g5.4xlarge` | g5.2xlarge (sufficient for QLoRA 4-bit) |
-| 3 | **Q&A pairs per chunk** | 3 pairs per chunk (default) vs 5 pairs | 3 keeps Bedrock cost low while scaling with corpus size |
-| 4 | **IaC tool** | Terraform (primary req.) vs AWS CDK | Terraform (per project-requirement.md) |
-| 5 | **Frontend** | Scope limited to Lambda API only, or include a lightweight UI? | Lambda API only for this plan |
-| 6 | **RAG Strategy** | Managed Bedrock KB owning the vector index vs. direct S3 Vectors queries via boto3 in `inference.py` | Clarification needed — AGENTS.md mentions both |
+| 1 | **Base LLM source** | HuggingFace Hub (requires token) vs SageMaker JumpStart | ✅ **JumpStart** (`meta-textgeneration-llama-3-1-8b-instruct`) — 100% within AWS, no external credentials |
+| 2 | **Training instance** | `ml.g5.2xlarge` (24GB VRAM, ~$1.215/hr Spot) vs `ml.g5.4xlarge` | ✅ **g5.2xlarge** (sufficient for QLoRA 4-bit) |
+| 3 | **Q&A pairs per chunk** | 3 pairs per chunk (default) vs 5 pairs | ✅ **3 pairs** — keeps Bedrock cost low while scaling with corpus size |
+| 4 | **IaC tool** | Terraform (primary req.) vs AWS CDK | ✅ **Terraform** (per project-requirement.md) |
+| 5 | **Frontend** | Scope limited to Lambda API only, or include a lightweight UI? | ✅ **Lambda API only** |
+| 6 | **RAG Strategy** | Managed Bedrock KB vs FAISS-on-S3 | ✅ **FAISS-on-S3** — index stored in S3, cached in RAM at inference; Scale-to-Zero compatible |
 
 > [!IMPORTANT]
 > **Production Refactor (FAISS-on-S3):** 

@@ -29,7 +29,7 @@ import boto3
 import faiss
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -50,27 +50,50 @@ _INDEX_CACHE: dict[str, Any] = {
 
 
 def model_fn(model_dir: str) -> Any:
-    """Load the trained model and tokenizer from model_dir during container boot."""
+    """Load the trained model and tokenizer from model_dir during container boot.
+
+    GPU path (ml.g5.x): 4-bit NF4 quantization keeps VRAM usage to ~4 GB.
+    CPU path (Serverless): bfloat16 requires ~16 GB; SageMaker Serverless caps at
+        6 GB, so this will OOM. For production, switch to a real-time endpoint
+        with a GPU instance (ml.g5.xlarge, ~$1/hr) instead of Serverless.
+    """
     logger.info("Loading model from %s", model_dir)
-    device_map = "auto" if torch.cuda.is_available() else "cpu"
 
     # Load tokenizer.
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
-    # Load model (QLoRA adapters are already merged from train.py).
-    model = AutoModelForCausalLM.from_pretrained(
-        model_dir,
-        device_map=device_map,
-        torch_dtype=torch.bfloat16,
-    )
-
-    logger.info("Model loaded successfully on %s", device_map)
+    if torch.cuda.is_available():
+        # 4-bit NF4 quantization — keeps GPU memory usage to ~4 GB on g5.xlarge.
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_dir,
+            device_map="auto",
+            quantization_config=bnb_config,
+        )
+        logger.info("Model loaded with 4-bit NF4 quantization on GPU.")
+    else:
+        logger.warning(
+            "No GPU detected. Loading 8B model in bfloat16 (~16 GB) on CPU. "
+            "SageMaker Serverless max memory is 6 GB — this endpoint will OOM. "
+            "Switch to a real-time endpoint (ml.g5.xlarge) for production use."
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_dir,
+            device_map="cpu",
+            torch_dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
+        )
 
     return pipeline(
         "text-generation",
         model=model,
         tokenizer=tokenizer,
-        device_map=device_map,
+        device_map="auto" if torch.cuda.is_available() else "cpu",
     )
 
 
