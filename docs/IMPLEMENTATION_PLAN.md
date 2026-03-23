@@ -2,6 +2,23 @@
 
 ---
 
+## MLOps Pillar Coverage
+
+| Pillar | Status | Notes |
+|--------|--------|-------|
+| Design, build, and maintain end-to-end MLOps pipelines (training, testing, deployment, monitoring) | ✅ Strong | SageMaker Pipeline DAG: preprocessing → synthesis → training → evaluation → registry → endpoint |
+| Operationalise models using SageMaker (training jobs, pipelines, model registry, real-time endpoints) | ⚠️ Partial | All covered except **batch inference** (Batch Transform not implemented) |
+| Support LLM and GenAI workloads (fine-tuning, inference optimisation, deployment patterns) | ✅ Strong | QLoRA fine-tuning, RAFT methodology, 4-bit quantisation, RAG at inference, scale-to-zero pattern |
+| Develop and maintain CI/CD pipelines for ML workflows | ✅ Strong | `ci.yml` (lint/test), `ct.yml` (continuous training), `deploy.yml` (endpoint), `tf-check.yml` (infra) |
+| Monitoring and observability (data drift, model performance, system health) | ⚠️ Partial | SageMaker Experiments + CloudWatch alarms exist; **live data drift and post-deployment model monitoring not implemented** |
+| Automate and improve ML development, release, and operational processes | ✅ Strong | Push to main → pipeline → evaluate → register → human approves → auto-deploy |
+| Drive continuous improvement in reliability, security, cost, and performance | ✅ Strong | Retry logic, checkpointing, idempotency, KMS, IAM least-privilege, scale-to-zero, 4-bit quantisation |
+| Security adherence and compliance (data privacy, model explainability) | ⚠️ Partial | Security strong (KMS, IAM, Secrets Manager, OIDC); **model explainability (SageMaker Clarify) not implemented** |
+
+> **Gaps to address:** (1) Data drift / live model monitoring — emit FAISS similarity scores as CloudWatch metrics from Lambda; (2) Batch inference — document why real-time was chosen or add as a planned item; (3) Model explainability — SageMaker Clarify integration.
+
+---
+
 ## Quick Reference: Guiding Constraints
 
 | Constraint | Rule |
