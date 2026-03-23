@@ -81,3 +81,15 @@ variable "studio_user_profile_name" {
   type        = string
   default     = "default"
 }
+
+variable "db_instance_class" {
+  description = "RDS instance class for the pgvector PostgreSQL database."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "db_name" {
+  description = "Name of the PostgreSQL database created inside the RDS instance."
+  type        = string
+  default     = "chitrakatha"
+}

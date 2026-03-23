@@ -55,8 +55,7 @@ jobs:
           echo "SILVER_BUCKET=$(terraform output -raw s3_silver_bucket)" >> $GITHUB_ENV
           echo "GOLD_BUCKET=$(terraform output -raw s3_gold_bucket)" >> $GITHUB_ENV
           echo "KMS_KEY_ARN=$(terraform output -raw kms_key_arn)" >> $GITHUB_ENV
-          echo "VECTORS_BUCKET=$(terraform output -raw s3_vectors_bucket)" >> $GITHUB_ENV
-          echo "FAISS_INDEX_PREFIX=$(terraform output -raw s3_faiss_index_prefix)" >> $GITHUB_ENV
+          echo "DB_SECRET_ARN=$(terraform output -raw rds_secret_arn)" >> $GITHUB_ENV
 
       - name: Trigger SageMaker Pipeline
         env:

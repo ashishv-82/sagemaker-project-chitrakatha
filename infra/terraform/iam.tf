@@ -63,27 +63,9 @@ data "aws_iam_policy_document" "sagemaker_s3" {
       "${aws_s3_bucket.silver.arn}/*",
       aws_s3_bucket.gold.arn,
       "${aws_s3_bucket.gold.arn}/*",
-      aws_s3_bucket.vectors.arn,
-      "${aws_s3_bucket.vectors.arn}/*",
     ]
   }
 
-  # JumpStart private cache bucket — stores EULA-gated models (Llama etc.).
-  # Separate from the public cache; requires explicit read access.
-  statement {
-    sid    = "S3ReadJumpStartPrivateCache"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:ListBucket",
-    ]
-    resources = [
-      "arn:aws:s3:::jumpstart-private-cache-prod-${var.aws_region}",
-      "arn:aws:s3:::jumpstart-private-cache-prod-${var.aws_region}/*",
-      "arn:aws:s3:::jumpstart-cache-prod-${var.aws_region}",
-      "arn:aws:s3:::jumpstart-cache-prod-${var.aws_region}/*",
-    ]
-  }
 }
 
 resource "aws_iam_role_policy" "sagemaker_s3" {
@@ -278,23 +260,11 @@ resource "aws_iam_role" "lambda_execution" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 
   tags = {
-    Purpose = "Lambda bridge: API Gateway to SageMaker real-time endpoint"
+    Purpose = "Lambda bridge: API Gateway to pgvector + Bedrock RAG"
   }
 }
 
-# Allow Lambda to invoke only the Chitrakatha real-time endpoint.
 data "aws_iam_policy_document" "lambda_invoke_endpoint" {
-  statement {
-    sid    = "InvokeChitrakathaEndpointOnly"
-    effect = "Allow"
-    actions = [
-      "sagemaker:InvokeEndpoint"
-    ]
-    resources = [
-      "arn:aws:sagemaker:${var.aws_region}:${local.account_id}:endpoint/${var.project_name}-*"
-    ]
-  }
-
   statement {
     sid    = "CloudWatchLogsLambda"
     effect = "Allow"
@@ -313,4 +283,66 @@ resource "aws_iam_role_policy" "lambda_invoke_endpoint" {
   name   = "invoke-chitrakatha-endpoint"
   role   = aws_iam_role.lambda_execution.id
   policy = data.aws_iam_policy_document.lambda_invoke_endpoint.json
+}
+
+# Allow Lambda to invoke Bedrock models (Qwen3 for generation + Titan Embed for query embedding).
+data "aws_iam_policy_document" "lambda_bedrock" {
+  statement {
+    sid    = "BedrockInvokeModels"
+    effect = "Allow"
+    actions = [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream",
+    ]
+    resources = [
+      "arn:aws:bedrock:${var.aws_region}::foundation-model/qwen.qwen3-next-80b-a3b",
+      "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_bedrock" {
+  name   = "bedrock-invoke-models"
+  role   = aws_iam_role.lambda_execution.id
+  policy = data.aws_iam_policy_document.lambda_bedrock.json
+}
+
+# Allow Lambda to read RDS credentials from Secrets Manager.
+data "aws_iam_policy_document" "lambda_secrets" {
+  statement {
+    sid    = "ReadRdsCredentials"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [
+      aws_secretsmanager_secret.rds_credentials.arn,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_secrets" {
+  name   = "read-rds-credentials"
+  role   = aws_iam_role.lambda_execution.id
+  policy = data.aws_iam_policy_document.lambda_secrets.json
+}
+
+# Allow Lambda to manage its VPC network interface (required for Lambda-in-VPC).
+data "aws_iam_policy_document" "lambda_vpc" {
+  statement {
+    sid    = "VpcNetworkInterface"
+    effect = "Allow"
+    actions = [
+      "ec2:CreateNetworkInterface",
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DeleteNetworkInterface",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_vpc" {
+  name   = "vpc-network-interface"
+  role   = aws_iam_role.lambda_execution.id
+  policy = data.aws_iam_policy_document.lambda_vpc.json
 }

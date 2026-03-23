@@ -105,9 +105,9 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "dynamodb:DeleteItem"
     ]
     resources = [
-      "arn:aws:s3:::project-chitrakatha-tf-state-*",
-      "arn:aws:s3:::project-chitrakatha-tf-state-*/*",
-      "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/project-chitrakatha-tf-lock"
+      "arn:aws:s3:::chitrakatha-tf-state-*",
+      "arn:aws:s3:::chitrakatha-tf-state-*/*",
+      "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/chitrakatha-tf-lock"
     ]
   }
 

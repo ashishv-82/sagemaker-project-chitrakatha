@@ -1,4 +1,4 @@
-> **Goal:** A production-grade, 100% Serverless, bilingual (English/Devanagari) Indian Comic History LLM platform on AWS using FAISS-on-S3 (Production RAG), Bedrock, and SageMaker — with a "Scale-to-Zero" cost model (~$5/mo baseline).
+> **Goal:** A production-grade, bilingual (English/Devanagari) Indian Comic History LLM platform on AWS. Website chatbot powered by **Bedrock Qwen3 Next 80B A3B + pgvector RAG** (always-on, no cold start). Fine-tuned Qwen2.5-3B via QLoRA+RAFT retained for benchmarking and MLOps learning. Baseline cost ~$50/mo.
 
 ---
 
@@ -6,16 +6,16 @@
 
 | Pillar | Status | Notes |
 |--------|--------|-------|
-| Design, build, and maintain end-to-end MLOps pipelines (training, testing, deployment, monitoring) | ✅ Strong | SageMaker Pipeline DAG: preprocessing → synthesis → training → evaluation → registry → endpoint |
+| Design, build, and maintain end-to-end MLOps pipelines (training, testing, deployment, monitoring) | ✅ Strong | SageMaker Pipeline DAG: preprocessing → synthesis → training → evaluation → registry |
 | Operationalise models using SageMaker (training jobs, pipelines, model registry, real-time endpoints) | ⚠️ Partial | All covered except **batch inference** (Batch Transform not implemented) |
-| Support LLM and GenAI workloads (fine-tuning, inference optimisation, deployment patterns) | ✅ Strong | QLoRA fine-tuning, RAFT methodology, 4-bit quantisation, RAG at inference, scale-to-zero pattern |
+| Support LLM and GenAI workloads (fine-tuning, inference optimisation, deployment patterns) | ✅ Strong | QLoRA fine-tuning, RAFT methodology, 4-bit quantisation, RAG at inference, Bedrock managed serving |
 | Develop and maintain CI/CD pipelines for ML workflows | ✅ Strong | `ci.yml` (lint/test), `ct.yml` (continuous training), `deploy.yml` (endpoint), `tf-check.yml` (infra) |
 | Monitoring and observability (data drift, model performance, system health) | ⚠️ Partial | SageMaker Experiments + CloudWatch alarms exist; **live data drift and post-deployment model monitoring not implemented** |
 | Automate and improve ML development, release, and operational processes | ✅ Strong | Push to main → pipeline → evaluate → register → human approves → auto-deploy |
 | Drive continuous improvement in reliability, security, cost, and performance | ✅ Strong | Retry logic, checkpointing, idempotency, KMS, IAM least-privilege, scale-to-zero, 4-bit quantisation |
 | Security adherence and compliance (data privacy, model explainability) | ⚠️ Partial | Security strong (KMS, IAM, Secrets Manager, OIDC); **model explainability (SageMaker Clarify) not implemented** |
 
-> **Gaps to address:** (1) Data drift / live model monitoring — emit FAISS similarity scores as CloudWatch metrics from Lambda; (2) Batch inference — document why real-time was chosen or add as a planned item; (3) Model explainability — SageMaker Clarify integration.
+> **Gaps to address:** (1) Data drift / live model monitoring — emit pgvector similarity scores as CloudWatch metrics from Lambda; (2) Batch inference — document why real-time was chosen or add as a planned item; (3) Model explainability — SageMaker Clarify integration.
 
 ---
 
@@ -25,15 +25,16 @@
 |---|---|
 | Language | Python 3.12+, strict type hints, pydantic v2 |
 | Encoding | UTF-8 everywhere; never strip Devanagari |
-| Compute | 100% Serverless (no EC2 / EKS / persistent DB) |
+| Compute | Serverless where possible; RDS PostgreSQL (db.t4g.micro) is the only persistent resource — justified by pgvector requirement |
 | Secrets | AWS Secrets Manager only — no hardcoding |
 | IaC | Terraform (primary) — outputs drive all runtime config |
-| Encryption | AWS-KMS CMKs on every S3 bucket |
+| Encryption | AWS-KMS CMKs on every S3 bucket and RDS instance |
 | IAM | Least-privilege, resource-scoped policies |
 | Training | On-demand ml.g4dn.xlarge (Spot quota is 0 by default in ap-southeast-2); checkpointing retained |
 | Tagging | `Project: Chitrakatha`, `CostCenter: MLOps-Research` on every resource |
 | Chunking | Sliding window, 15% overlap for narrative continuity |
 | Versioning | S3 bucket versioning enabled on all data buckets |
+| Networking | Option B: private RDS + VPC endpoints (Bedrock + Secrets Manager) + custom ECR Docker; no NAT Gateway |
 
 ---
 
@@ -61,7 +62,7 @@
 - Package init; exposes `__version__`
 
 #### `src/chitrakatha/config.py` [NEW]
-- Pydantic v2 `BaseSettings` model: reads `AWS_REGION`, `S3_BUCKET_PREFIX`, `KMS_KEY_ARN`, `SAGEMAKER_ROLE_ARN`, `S3_VECTOR_INDEX_NAME` from environment / SSM
+- Pydantic v2 `BaseSettings` model: reads `AWS_REGION`, `S3_BUCKET_PREFIX`, `KMS_KEY_ARN`, `SAGEMAKER_ROLE_ARN`, `PGVECTOR_SECRET_ARN` from environment
 - No hardcoded values
 
 #### `src/chitrakatha/exceptions.py` [NEW]
@@ -70,7 +71,7 @@
   - `SageMakerPipelineError(ChitrakathaBaseError)`
   - `BedrockEmbeddingError(ChitrakathaBaseError)` — Titan embedding API failures
   - `BedrockSynthesisError(ChitrakathaBaseError)` — Claude RAFT synthesis failures
-  - `S3VectorError(ChitrakathaBaseError)`
+  - `PgVectorError(ChitrakathaBaseError)` — replaces `S3VectorError`
   - `DataIngestionError(ChitrakathaBaseError)`
 
 #### `README.md` [NEW]
@@ -87,57 +88,95 @@
 
 ### Directory: `infra/terraform/`
 
-#### `infra/terraform/main.tf` [NEW]
-- Provider: `aws` pinned to `~> 5.x`
-- Terraform backend: S3 state bucket + DynamoDB lock table (bootstrap script)
+#### `infra/terraform/main.tf` [EXISTING]
+- Provider: `aws ~> 5.x`, `random ~> 3.6` (for RDS password generation)
+- Terraform backend: S3 state bucket + DynamoDB lock table
 
-#### `infra/terraform/variables.tf` [NEW]
-- `aws_region`, `project_name` (default: `chitrakatha`), `environment` (default: `dev`)
+#### `infra/terraform/variables.tf` [UPDATE]
+- Existing: `aws_region`, `project_name`, `environment`
+- Add: `db_instance_class` (default: `db.t4g.micro`), `db_name` (default: `chitrakatha`)
 
-#### `infra/terraform/kms.tf` [NEW]
-- **Customer Managed Key** for all S3 buckets
-- Key policy: least-privilege (SageMaker role, Bedrock service principal)
-- Tags: `Project: Chitrakatha`, `CostCenter: MLOps-Research`
+#### `infra/terraform/kms.tf` [EXISTING]
+- Customer Managed Key for all S3 buckets and RDS instance
 
-#### `infra/terraform/s3.tf` [NEW]
-Provisions **4 S3 buckets** with versioning + KMS + lifecycle:
+#### `infra/terraform/s3.tf` [UPDATE]
+Provisions **3 S3 buckets** (vectors bucket removed — replaced by pgvector on RDS):
 1. `chitrakatha-bronze-{account_id}` — raw ingest (articles, transcripts, Excel)
 2. `chitrakatha-silver-{account_id}` — cleaned JSONL
-3. `chitrakatha-gold-{account_id}` — training-ready datasets + model artifacts
-4. `chitrakatha-vectors-{account_id}` — **FAISS Index** bucket
+3. `chitrakatha-gold-{account_id}` — training-ready datasets + model artifacts + base model cache
 
-#### `infra/terraform/faiss_index.tf` [NEW]
-- **FAISS Index URI Placeholder**
-- Defines the S3 URI where the FAISS index will be written and read from.
-- Links to vectors bucket.
+#### `infra/terraform/networking.tf` [UPDATE]
+- Existing: VPC (10.0.0.0/16), public subnets (10.0.1.0/24, 10.0.2.0/24), Internet Gateway
+- Add: private subnets (10.0.3.0/24, 10.0.4.0/24), private route table (no IGW)
+- Add VPC endpoints:
+  - `com.amazonaws.{region}.s3` — Gateway endpoint (free); associated with private route table
+  - `com.amazonaws.{region}.bedrock-runtime` — Interface endpoint; Lambda calls Bedrock Qwen3 without NAT
+  - `com.amazonaws.{region}.secretsmanager` — Interface endpoint; Lambda fetches RDS credentials at runtime
+- Add security group for VPC endpoints (allow HTTPS from VPC CIDR)
 
-#### `infra/terraform/iam.tf` [NEW]
-- **SageMaker Execution Role** with least-privilege inline policies:
-  - S3: `GetObject`, `PutObject`, `ListBucket` scoped to the 4 named buckets only
-  - Bedrock: `InvokeModel` on Titan Embed v2 ARN only
-  - SageMaker: `CreateProcessingJob`, `CreateTrainingJob`, `CreateModel`, `CreateEndpointConfig`, `CreateEndpoint`
-  - KMS: `GenerateDataKey`, `Decrypt` scoped to CMK ARN
-  - Secrets Manager: `GetSecretValue` scoped to `chitrakatha/*`
-  - CloudWatch Logs: `CreateLogGroup`, `PutLogEvents`
+#### `infra/terraform/rds.tf` [NEW]
+- `random_password` resource — 32-char alphanumeric RDS password
+- `aws_security_group.rds` — allow port 5432 from Lambda security group only
+- `aws_security_group.lambda` — allow all outbound (reaches RDS + VPC endpoints)
+- `aws_db_subnet_group` — private subnets only
+- `aws_db_instance` — PostgreSQL 16, `db.t4g.micro`, 20GB gp3, KMS-encrypted, `publicly_accessible = false`
+- `aws_secretsmanager_secret.rds_credentials` — stores `{host, port, dbname, username, password}` as JSON
 
-#### `infra/terraform/secrets.tf` [NEW]
-- AWS Secrets Manager secret: `chitrakatha/synthetic_data_api_key`
-- Placeholder value — real value injected via CI/CD
+#### `infra/terraform/pgvector.tf` [NEW — replaces faiss_index.tf]
+- Locals defining pgvector table name and index configuration
+- `null_resource` to run schema init SQL via psql after RDS is provisioned:
+  ```sql
+  CREATE EXTENSION IF NOT EXISTS vector;
+  CREATE TABLE IF NOT EXISTS embeddings (
+    id BIGSERIAL PRIMARY KEY,
+    chunk_id TEXT UNIQUE NOT NULL,
+    chunk_text TEXT NOT NULL,
+    source_document TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    token_count INTEGER NOT NULL,
+    embedding vector(1024)
+  );
+  CREATE INDEX IF NOT EXISTS embeddings_hnsw_idx
+    ON embeddings USING hnsw (embedding vector_cosine_ops);
+  ```
 
-#### `infra/terraform/outputs.tf` [NEW]
-- Exports: `sagemaker_role_arn`, `kms_key_arn`, `s3_bronze_bucket`, `s3_silver_bucket`, `s3_gold_bucket`, `s3_vectors_bucket`, `s3_faiss_index_prefix`, `secret_arn`
+#### `infra/terraform/iam.tf` [UPDATE]
+- SageMaker role:
+  - Remove: `S3ReadJumpStartPrivateCache` statement (no longer using JumpStart)
+  - Remove: vectors bucket ARN from `S3ReadWriteProjectBuckets`
+  - Retain: Bedrock permissions for Titan Embed + Claude 3.5 Sonnet synthesis
+- Lambda role:
+  - Remove: `sagemaker:InvokeEndpoint` (Lambda calls Bedrock directly now)
+  - Add: `bedrock:InvokeModel` + `bedrock:InvokeModelWithResponseStream` for Qwen3 Next 80B A3B + Titan Embed
+  - Add: `secretsmanager:GetSecretValue` scoped to `chitrakatha/rds_credentials`
+  - Add: `ec2:CreateNetworkInterface`, `ec2:DeleteNetworkInterface`, `ec2:DescribeNetworkInterfaces` (Lambda in VPC requirement)
 
-#### `infra/terraform/cloudwatch.tf` [NEW]
-- CloudWatch Alarms:
-  - Serverless endpoint `ModelInvocationErrors` > 5 in 5 min → SNS alert
-  - Serverless endpoint cold-start latency P99 > 30s → SNS alert
-  - 4xx/5xx error rate > 1% → SNS alert
+#### `infra/terraform/secrets.tf` [EXISTING]
+- Existing: `chitrakatha/synthetic_data_api_key` for Claude synthesis
+- RDS credentials secret is managed in `rds.tf`
+
+#### `infra/terraform/outputs.tf` [UPDATE]
+- Remove: `s3_vectors_bucket`, `s3_vectors_bucket_arn`, `s3_faiss_index_prefix`
+- Add: `rds_endpoint`, `rds_secret_arn`, `lambda_security_group_id`, `private_subnet_ids`
+
+#### `infra/terraform/lambda.tf` [UPDATE]
+- Add `vpc_config` block: private subnets + Lambda security group
+- Update env vars: replace `SAGEMAKER_ENDPOINT_NAME` with `DB_SECRET_ARN`, `BEDROCK_HAIKU_MODEL_ID`
+- Increase timeout to 60s (pgvector retrieval + Bedrock generation)
+- Add `depends_on` for VPC endpoints (Lambda must not start before endpoints are ready)
+
+#### `infra/terraform/cloudwatch.tf` [EXISTING]
+- CloudWatch Dashboard: `ChitrakathaMLOpsDashboard`
+- Widgets: Lambda invocations, error rate, Bedrock latency, training job status
+
+#### `infra/terraform/github_oidc.tf` [EXISTING]
+- OIDC role for GitHub Actions — no changes required
 
 ---
 
 ## Phase 2 — Data Layer & Ingestion Pipeline
 
-**Goal:** Accept raw source material only — the pipeline handles everything else. Two parallel flows serve different purposes: **Flow A** builds the RAG knowledge base; **Flow B** auto-generates fine-tuning training pairs from that same corpus via Claude.
+**Goal:** Accept raw source material only — the pipeline handles everything else. Two parallel flows serve different purposes: **Flow A** builds the pgvector knowledge base; **Flow B** auto-generates fine-tuning training pairs from that same corpus via Claude.
 
 > [!NOTE]
 > **You never write Q&A pairs manually.** You drop raw data in. Claude reads each chunk and synthesises bilingual training examples automatically.
@@ -153,11 +192,10 @@ Provisions **4 S3 buckets** with versioning + KMS + lifecycle:
 
 ### Sub-phase 2a: Raw Ingestion → S3 Bronze
 
-#### `data/scripts/upload_to_bronze.py` [NEW]
+#### `data/scripts/upload_to_bronze.py` [EXISTING]
 - Generic S3 upload utility for all raw source types above
 - Validates UTF-8 encoding before upload; preserves Devanagari
 - Computes MD5 checksum stored in S3 object metadata for lineage
-- Supported parsers: plain text, `.vtt` (strips timestamps), `.xlsx` (via `openpyxl`)
 
 ### Sub-phase 2b: Preprocessing & Dual-Flow Split
 
@@ -172,63 +210,48 @@ S3 Bronze (raw)
       └──► S3 Silver /training/   ← Flow B: input for Q&A synthesis
 ```
 
-### Sub-phase 2c: Flow A — Corpus → FAISS-on-S3 (RAG knowledge base)
+### Sub-phase 2c: Flow A — Corpus → pgvector (RAG knowledge base)
 
-#### `src/chitrakatha/ingestion/chunker.py` [NEW]
-- **Sliding-window chunker** with 15% overlap
-- Configurable `chunk_size` (default: 512 tokens) and `overlap_ratio` (default: 0.15)
+#### `src/chitrakatha/ingestion/chunker.py` [EXISTING]
+- Sliding-window chunker with 15% overlap
 - Preserves Devanagari; never strips non-ASCII
-- Returns `list[Chunk]` where `Chunk` is a pydantic v2 model
 
-#### `src/chitrakatha/ingestion/embedder.py` [NEW]
+#### `src/chitrakatha/ingestion/embedder.py` [EXISTING]
 - Wraps Bedrock `amazon.titan-embed-text-v2:0`
-- Batch-embeds chunks (max 25 per API call to stay within limits)
-- Raises `BedrockEmbeddingError` on failure
+- Batch-embeds chunks (max 25 per API call)
 - Returns `list[float]` (1024-dim vectors)
 
-#### `src/chitrakatha/ingestion/faiss_writer.py` [REFAC]
-- Writes `(vector_id, embedding, metadata)` to a **FAISS Index** stored in S3.
-- Metadata payload: `{"chunk_id": ..., "chunk_text": ..., "source_document": ..., "chunk_index": ..., "token_count": ...}`
-- Supports incremental updates by downloading existing index, appending, and re-uploading.
-- Raises `S3VectorError` on failure.
-
-#### `data/scripts/ingest_to_faiss.py` [NEW]
-- Orchestration: reads `/corpus/` chunks from Silver → chunk → embed → write FAISS index to S3
-- Idempotent: checks for existing vector IDs before re-inserting
-- Runs as a **SageMaker Processing Job** (see Phase 3)
+#### `src/chitrakatha/ingestion/pgvector_writer.py` [NEW — replaces faiss_writer.py]
+- Writes `(chunk_id, chunk_text, source_document, chunk_index, token_count, embedding)` to RDS pgvector
+- Connects via credentials fetched from Secrets Manager (`chitrakatha/rds_credentials`)
+- Idempotent: uses `INSERT ... ON CONFLICT (chunk_id) DO UPDATE` — safe to re-run
+- Raises `PgVectorError` on connection or insert failure
 
 ### Sub-phase 2d: Flow B — Corpus → RAFT Training Data → Fine-tuning
 
-> **Technique: RAFT (Retrieval-Augmented Fine-Tuning)**  
-> The model is trained not just on Q&A facts, but on examples that include a golden document *and* distractor documents. This teaches the model the skill of reading retrieved context and ignoring irrelevant chunks — exactly what it must do at inference time against live S3 Vector results.
+> **Technique: RAFT (Retrieval-Augmented Fine-Tuning)**
+> The model is trained not just on Q&A facts, but on examples that include a golden document *and* distractor documents. This teaches the model the skill of reading retrieved context and ignoring irrelevant chunks — exactly what it must do at inference time against live pgvector results.
 
-#### `data/scripts/synthesize_training_pairs.py` [NEW]
+#### `data/scripts/synthesize_training_pairs.py` [EXISTING]
 - Reads clean corpus chunks from `S3 Silver /training/`
-- For each **golden chunk**, randomly samples 2 **distractor chunks** from the same Silver corpus (different entity/publisher)
-- Calls **Bedrock Claude** (`anthropic.claude-3-5-sonnet-20241022-v2:0`) with a RAFT prompt:
-  > *"You are given a golden document and 2 distractor documents about Indian comics. Generate 3 bilingual Q&A pairs (English + Devanagari Hindi). For each pair, include a chain-of-thought that explicitly identifies which document contains the answer and why the distractors are irrelevant. Ground every answer strictly in the golden document only."*
+- For each golden chunk, randomly samples 2 distractor chunks from different `source_document` values
+- Calls Bedrock Claude 3.5 Sonnet v2 with a RAFT prompt
 - Output schema per record:
   ```json
   {
     "id": "uuid4",
     "question_en": "...",
     "question_hi": "... (Devanagari)",
-    "golden_chunk": "... (the source passage)",
+    "golden_chunk": "...",
     "distractor_chunks": ["...", "..."],
-    "chain_of_thought": "The question asks about X. Document 1 mentions X explicitly. Documents 2 and 3 are about different characters and are not relevant...",
-    "answer_en": "... (grounded in golden_chunk only)",
-    "answer_hi": "... (Devanagari, grounded in golden_chunk only)",
+    "chain_of_thought": "...",
+    "answer_en": "...",
+    "answer_hi": "...",
     "source_chunk_id": "...",
-    "source_entity": "Nagraj",
-    "publisher": "Raj Comics",
     "language_pair": "en-hi"
   }
   ```
-- Output: JSONL to `S3 Gold /training-pairs/` (grows with every corpus update)
-- Raises `BedrockEmbeddingError` on API failure; retries with exponential backoff
-- Runs as a **SageMaker Processing Job** after embedding step
-
-> **Cost note:** RAFT examples are ~3–4× larger than plain Q&A pairs (include golden + 2 distractor chunks). Expect ~$3–9/run Bedrock synthesis cost vs ~$1–3 for plain SFT.
+- Output: JSONL to `S3 Gold /training-pairs/`
 
 ---
 
@@ -238,135 +261,117 @@ S3 Bronze (raw)
 
 ### Sub-phase 3a: Processing Step
 
-#### `pipeline/steps/preprocessing.py` [NEW]
+#### `pipeline/steps/preprocessing.py` [EXISTING]
 - SageMaker Processing script (runs in `SKLearnProcessor`)
-- Input: raw source files from S3 Bronze (articles, transcripts, Excel, synopsis)
-- Operations:
-  1. Parse source type (`.vtt` → strip timestamps, `.xlsx` → flatten rows, `.txt` → passthrough)
-  2. Normalize Unicode (NFC form, **preserve Devanagari** — never strip non-ASCII)
-  3. De-duplicate by content hash
-  4. Language-tag each document (`en`, `hi`, or `en-hi` bilingual)
-  5. Split into two output prefixes:
-     - `S3 Silver /corpus/` — clean full-text for RAG embedding (Flow A)
-     - `S3 Silver /training/` — clean chunks as synthesis input (Flow B)
-- Raises `DataIngestionError` on unreadable or completely empty documents
+- Input: raw source files from S3 Bronze
+- Output: `S3 Silver /corpus/` (Flow A) + `S3 Silver /training/` (Flow B)
 
 ### Sub-phase 3b: Embedding Step (Flow A)
 
-#### `pipeline/steps/embed_and_index.py` [NEW]
+#### `pipeline/steps/embed_and_index.py` [UPDATE]
 - SageMaker Processing script
-- Reads `S3 Silver /corpus/` → chunk → embed → write FAISS index to S3
-- Calls `ingest_to_faiss.py` logic (idempotent)
+- Reads `S3 Silver /corpus/` → chunk → embed via Titan Embed v2 → **insert into pgvector** (replaces FAISS S3 upload)
+- Connects to RDS via credentials from Secrets Manager
 - Logs vector count to SageMaker Experiments
 
 ### Sub-phase 3b-ii: Training Pair Synthesis Step (Flow B)
 
-#### `pipeline/steps/synthesize_pairs.py` [NEW]
+#### `pipeline/steps/synthesize_pairs.py` [EXISTING]
 - SageMaker Processing script wrapping `synthesize_training_pairs.py`
 - Reads `S3 Silver /training/` corpus chunks
-- Claude generates 3 bilingual Q&A pairs per chunk
+- Claude 3.5 Sonnet v2 generates 3 bilingual Q&A pairs per chunk
 - Outputs to `S3 Gold /training-pairs/`
-- Logs pair count and Bedrock token usage to SageMaker Experiments
 - **Runs in parallel with `embed_and_index.py`** (no dependency between Flow A and Flow B)
 
 ### Sub-phase 3c: Fine-tuning Step
 
-#### `pipeline/steps/train.py` [NEW]
-- **QLoRA fine-tuning** using `trl.SFTTrainer` + `peft` with **RAFT prompt template**
-- Base model: `meta-llama/Meta-Llama-3.1-8B-Instruct` via **SageMaker JumpStart** (`meta-textgeneration-llama-3-1-8b-instruct`) — weights delivered to `SM_CHANNEL_MODEL`, no HuggingFace token required
+#### `pipeline/steps/train.py` [EXISTING]
+- **QLoRA fine-tuning** using `trl.SFTTrainer` (pinned to 0.8.6) + `peft` with RAFT prompt template
+- Base model: `Qwen/Qwen2.5-3B-Instruct` (Apache 2.0) — loaded from **S3 Gold `/base-models/qwen2.5-3b-instruct/`** via `SM_CHANNEL_MODEL` (not downloaded from HuggingFace at runtime)
 - LoRA config: `r=16`, `lora_alpha=32`, `target_modules=["q_proj","v_proj"]`, `lora_dropout=0.05`
-- Quantization: 4-bit `BitsAndBytesConfig` (NF4)
-- **RAFT prompt template** applied to every training example:
-  ```
-  You are given the following documents:
-  [Document 1 - may or may not be relevant]: {distractor_1}
-  [Document 2 - may or may not be relevant]: {golden_chunk}
-  [Document 3 - may or may not be relevant]: {distractor_2}
-
-  Question: {question}
-
-  Think step by step, then answer using ONLY the relevant document above.
-  {chain_of_thought}
-  Answer: {answer}
-  ```
-  > Documents are shuffled randomly so the model cannot learn positional shortcuts.
-- **On-demand training**: `use_spot_instances=False` (default Spot quota is 0 in ap-southeast-2)
+- Quantization: 4-bit `BitsAndBytesConfig` (NF4, float16 for T4 GPU)
+- **On-demand training**: `use_spot_instances=False` (Spot quota is 0 in ap-southeast-2)
 - Checkpointing to S3 Gold (`/checkpoints/`)
-- Logs hyperparameters + eval metrics to **SageMaker Experiments** run
-- Evaluation: ROUGE-L score on held-out 10% of Gold data
+- LoRA adapters merged into base model weights before saving (plain `AutoModelForCausalLM` at serving time)
+- Logs hyperparameters + eval metrics to SageMaker Experiments
 
-#### `pipeline/steps/evaluate.py` [NEW]
-- Standalone evaluation script with **three test suites**:
-  1. **Factual accuracy**: ROUGE-L, BERTScore (multilingual), exact-match@1 on held-out Q&A pairs
-  2. **Cross-lingual retrieval**: English query → must match Devanagari ground truth answer
-  3. **Distractor robustness** *(RAFT-specific)*: Model is given 1 golden + 4 distractor chunks; must still produce the correct answer — tests that the RAFT training generalised
-- Emits all metrics to SageMaker Experiments
-- Returns `{"status": "pass"/"fail", "rouge_l": float, "distractor_robustness": float}`
+#### `pipeline/steps/evaluate.py` [EXISTING]
+- Three test suites: factual accuracy (ROUGE-L, BERTScore), cross-lingual retrieval, distractor robustness
 - Pass threshold: ROUGE-L ≥ 0.35 **AND** distractor_robustness ≥ 0.70
+
+#### `pipeline/Dockerfile` [NEW]
+- Custom ECR training image with all `pipeline/requirements.txt` deps pre-baked at build time
+- Base: `763104351884.dkr.ecr.{region}.amazonaws.com/huggingface-pytorch-training:2.1.0-transformers4.40-gpu-py310-cu121-ubuntu20.04`
+- Eliminates runtime `pip install`; rebuilt only when `requirements.txt` changes
+- Pushed to ECR by `ct.yml` before pipeline execution
+
+#### `pipeline/requirements.txt` [EXISTING — pinned]
+- All versions exact-pinned: `trl==0.8.6`, `transformers==4.40.0`, `torch==2.1.0`, `peft==0.10.0`, etc.
+- Pinned to prevent breaking API changes on every training run
 
 ### Sub-phase 3d: Pipeline DAG
 
-#### `pipeline/pipeline.py` [NEW]
-- `sagemaker.workflow.pipeline.Pipeline` definition
+#### `pipeline/pipeline.py` [EXISTING]
+- `sagemaker.workflow.pipeline.Pipeline` definition using `PipelineSession`
 - Steps in order:
-  1. `ProcessingStep` — runs `preprocessing.py` via `SKLearnProcessor` (splits Bronze → Silver corpus + training)
-  2. `ProcessingStep` — runs `embed_and_index.py` (Flow A: corpus → FAISS-on-S3) ┐ run in parallel
-  3. `ProcessingStep` — runs `synthesize_pairs.py` (Flow B: chunks → Claude → Gold Q&A) ┘
-  4. `TrainingStep` — runs `train.py` via `JumpStartEstimator` (`meta-textgeneration-llama-3-1-8b-instruct`, g5.2xlarge Spot) — reads from Gold Q&A
-  5. `ProcessingStep` — runs `evaluate.py`
-  6. `ConditionStep` — if ROUGE-L ≥ 0.35 **AND** distractor_robustness ≥ 0.70 → proceed to registration
+  1. `ProcessingStep` — `preprocessing.py` via `SKLearnProcessor`
+  2. `ProcessingStep` — `embed_and_index.py` (Flow A: corpus → pgvector) ┐ parallel
+  3. `ProcessingStep` — `synthesize_pairs.py` (Flow B: chunks → Gold Q&A) ┘
+  4. `TrainingStep` — `train.py` via `HuggingFace` estimator with custom ECR image; `SM_CHANNEL_MODEL` mounts base model from `s3://chitrakatha-gold/base-models/qwen2.5-3b-instruct/`
+  5. `ProcessingStep` — `evaluate.py`
+  6. `ConditionStep` — if ROUGE-L ≥ 0.35 AND distractor_robustness ≥ 0.70 → register
   7. `ModelStep` — creates SageMaker Model artifact
-  8. `RegisterModel` — registers to Model Registry (approval status: `PendingManualApproval`)
-- Pipeline parameters: `InputDataUri`, `ModelApprovalStatus`
-- Tags: `Project: Chitrakatha`, `CostCenter: MLOps-Research`
-
-#### `pipeline/requirements.txt` [NEW]
-- Dependencies for training container: `transformers`, `peft`, `trl`, `datasets`, `bitsandbytes`, `rouge-score`, `bert-score`, `evaluate`, `sentencepiece`
-  > `sentencepiece` required for multilingual BERTScore tokenisation across English and Devanagari.
+  8. `RegisterModel` — registers to Model Registry (`PendingManualApproval`)
+- `source_dir` is NOT used in `processor.run()` calls — `chitrakatha` library synced to S3 and mounted via `ProcessingInput`; `PYTHONPATH=/opt/ml/processing/input/src`
 
 ---
 
-## Phase 4 — Serving: Serverless Inference + Lambda Bridge
+## Phase 4 — Serving: Bedrock Qwen3 Next 80B A3B + pgvector RAG
 
-**Goal:** Deploy the fine-tuned model behind a zero-cost-when-idle serverless endpoint, with a Lambda function providing the RAG query interface.
+**Goal:** Always-on chatbot API with no GPU cold start. Bedrock Qwen3 Next 80B A3B handles generation; pgvector on RDS handles retrieval. Fine-tuned Qwen model retained in Model Registry for benchmarking only.
 
-### Sub-phase 4a: Serverless Endpoint
+### Sub-phase 4a: Inference Logic
 
-#### `serving/deploy_endpoint.py` [NEW]
-- Reads approved model from SageMaker Model Registry
-- Deploys via `ServerlessInferenceConfig`:
-  - `MemorySizeInMB=6144`
-  - `MaxConcurrency=5`
-- Endpoint name: `chitrakatha-rag-serverless`
-- Custom **Container Environment**: injects `BEDROCK_KB_ID`, `S3_FAISS_INDEX_PREFIX`
+#### `serving/inference.py` [REWRITE]
+- **No longer a SageMaker endpoint entry point** — now a standalone RAG module called directly by Lambda
+- RAG flow:
+  1. Embed query using Bedrock Titan Embed v2 (1024-dim)
+  2. Query pgvector via `SELECT ... ORDER BY embedding <=> %s LIMIT 5` (cosine similarity)
+  3. Build prompt with retrieved chunks as context
+  4. Call Bedrock Qwen3 Next 80B A3B (`qwen.qwen3-next-80b-a3b`) for generation
+- RDS connection pooled at module level (reused across Lambda invocations)
+- Credentials fetched from Secrets Manager once at cold start; cached in module scope
 
-#### `serving/inference.py` [REFAC]
-- Model server entry point (`model_fn`, `predict_fn`)
-- RAG flow inside `predict_fn`:
-  1. Embed query using Bedrock Titan v2
-  2. Similarity search against **FAISS index** (cached in memory from S3)
-  3. Build prompt: `[Context from retrieved chunks] + [User Query]`
-  4. Generate response via the fine-tuned Llama model
-- Raises `SageMakerPipelineError` on empty context retrieval
+#### `serving/deploy_endpoint.py` [BENCHMARKING ONLY]
+- **Not part of the live serving path**
+- Used on-demand to deploy the fine-tuned Qwen model to a SageMaker real-time endpoint for quality benchmarking
+- Endpoint scaled to 0 when not actively benchmarking
 
 ### Sub-phase 4b: Lambda Bridge
 
-#### `serving/lambda/handler.py` [NEW]
-- Python 3.12 Lambda function
-- API Gateway → Lambda → SageMaker Serverless endpoint
+#### `serving/lambda/handler.py` [UPDATE]
+- Python 3.12 Lambda function; runs inside VPC (private subnets)
+- API Gateway → Lambda → pgvector retrieval + Bedrock Qwen3 generation
+- **New request/response contract** (designed for future multi-turn, no breaking changes needed later):
+  ```json
+  // Request
+  { "query": "Who created Nagraj?", "session_id": "abc123", "history": [] }
+  // Response
+  { "answer": "Nagraj was created by...", "language": "en", "session_id": "abc123" }
+  ```
 - Input validation via pydantic v2 (`QueryRequest` model)
-- Returns `{"answer": str, "sources": list[str], "language": "en"|"hi"}`
-- Language detection: if query contains Devanagari chars → respond in Hindi
-- Cold-start optimization: reuse boto3 client at module level
-- CloudWatch structured logging (JSON)
+- Language detection: Devanagari chars (`[\u0900-\u097F]`) → `language: "hi"`
+- Remove 503 cold start logic (no SageMaker endpoint in hot path)
+- `history` accepted but not yet used — reserved for future multi-turn conversation memory
 
-#### `serving/lambda/requirements.txt` [NEW]
-- `boto3`, `pydantic>=2`
+#### `serving/lambda/requirements.txt` [UPDATE]
+- Add: `psycopg2-binary`, `pgvector`
+- Retain: `boto3`, `pydantic>=2`
 
-#### `infra/terraform/lambda.tf` [NEW]
-- Lambda function resource with IAM role (invoke SageMaker endpoint only)
-- API Gateway HTTP API trigger
-- Environment vars from Terraform outputs (no hardcoding)
+#### `infra/terraform/lambda.tf` [UPDATE]
+- Lambda in VPC: `vpc_config` with private subnets + Lambda security group
+- Env vars: `DB_SECRET_ARN`, `BEDROCK_QWEN3_MODEL_ID`, `BEDROCK_EMBED_MODEL_ID`
+- Timeout: 60s
 
 ---
 
@@ -374,18 +379,16 @@ S3 Bronze (raw)
 
 **Goal:** Full experiment tracking, data-to-model lineage, and CloudWatch dashboards.
 
-#### `src/chitrakatha/monitoring/lineage.py` [NEW]
+#### `src/chitrakatha/monitoring/lineage.py` [EXISTING]
 - Wraps `sagemaker.lineage` APIs
-- Records: `DataSet → ProcessingJob → TrainingJob → Model → Endpoint` lineage chain
-- Called from pipeline steps post-execution
+- Records: `DataSet → ProcessingJob → TrainingJob → Model` lineage chain
 
-#### `src/chitrakatha/monitoring/experiments.py` [NEW]
-- Helper to log to **SageMaker Experiments**
+#### `src/chitrakatha/monitoring/experiments.py` [EXISTING]
+- Helper to log to SageMaker Experiments
 - Logs: `base_model`, `lora_r`, `lora_alpha`, `learning_rate`, `epochs`, `rouge_l`, `bert_score`
 
-#### `infra/terraform/cloudwatch.tf` (additions)
-- CloudWatch Dashboard: `ChitrakathaMLOpsDashboard`
-  - Widgets: endpoint invocations, error rate, cold-start P99, training job status
+#### `infra/terraform/cloudwatch.tf` [EXISTING]
+- Dashboard widgets: Lambda invocations, error rate, Bedrock latency P99, training job status
 
 ---
 
@@ -393,102 +396,135 @@ S3 Bronze (raw)
 
 **Goal:** Automated quality gates and pipeline triggering on every PR and merge to `main`.
 
-#### `.github/workflows/ci.yml` [NEW]
-- Triggers: `push` to `main`, `pull_request`
-- Jobs:
-  1. **lint-and-type-check**: `ruff check`, `ruff format --check`, `mypy src/`
-  2. **unit-tests**: `pytest tests/unit/ -v --cov=src/chitrakatha --cov-fail-under=80`
-  3. **terraform-lint**: `terraform fmt -check`, `terraform validate`
-  4. **terraform-plan**: on PR only, posts plan output as PR comment
+#### `.github/workflows/ci.yml` [EXISTING]
+- `ruff check`, `ruff format --check`, `mypy src/`, `pytest tests/unit/`
 
-#### `.github/workflows/ct.yml` [NEW]
-- Triggers: merge to `main` + manual `workflow_dispatch`
-- Job: **trigger-sagemaker-pipeline**
-  - Assumes OIDC role (no long-lived keys)
-  - Calls `pipeline/pipeline.py --execute`
-  - Posts pipeline ARN to Slack/GitHub summary
+#### `.github/workflows/ct.yml` [UPDATE]
+- On push to `main`: build + push ECR Docker image (if `pipeline/requirements.txt` changed), then run `pipeline/pipeline.py --execute`
+- Assumes OIDC role; fetches Terraform outputs as env vars
 
-#### `.github/workflows/deploy.yml` [NEW]
-- Triggers: SageMaker Model Registry approval webhook (via EventBridge → Lambda → GitHub Actions API)
-- Job: **deploy-endpoint** — runs `serving/deploy_endpoint.py`
+#### `.github/workflows/deploy.yml` [EXISTING]
+- Manual trigger for benchmarking: runs `serving/deploy_endpoint.py`
+- Note: endpoint is for benchmarking only, not live traffic
+
+#### `.github/workflows/tf-check.yml` [EXISTING]
+- `terraform fmt -check`, `terraform validate`, `tfsec` on infra changes
 
 ---
 
-## Proposed Repository Layout
+## Repository Layout
 
 ```
 sagemaker-project-chitrakatha/
-├── .github/
-│   └── workflows/
-│       ├── ci.yml
-│       ├── ct.yml
-│       └── deploy.yml
+├── .github/workflows/
+│   ├── ci.yml
+│   ├── ct.yml
+│   ├── deploy.yml
+│   └── tf-check.yml
 ├── .pre-commit-config.yaml
-├── AGENTS.md
 ├── Makefile
 ├── README.md
 ├── pyproject.toml
 ├── .python-version
 │
-├── infra/
-│   └── terraform/
-│       ├── main.tf
-│       ├── variables.tf
-│       ├── kms.tf
-│       ├── s3.tf
-│       ├── faiss_index.tf
-│       ├── iam.tf
-│       ├── secrets.tf
-│       ├── cloudwatch.tf
-│       ├── lambda.tf
-│       └── outputs.tf
+├── infra/terraform/
+│   ├── main.tf
+│   ├── variables.tf
+│   ├── kms.tf
+│   ├── s3.tf
+│   ├── networking.tf         # VPC + public/private subnets + VPC endpoints
+│   ├── rds.tf                # RDS PostgreSQL + pgvector security groups + credentials
+│   ├── pgvector.tf           # pgvector schema init (replaces faiss_index.tf)
+│   ├── iam.tf
+│   ├── secrets.tf
+│   ├── cloudwatch.tf
+│   ├── lambda.tf
+│   ├── studio.tf
+│   ├── github_oidc.tf
+│   └── outputs.tf
 │
-├── src/
-│   └── chitrakatha/
-│       ├── __init__.py
-│       ├── config.py              # Pydantic v2 settings
-│       ├── exceptions.py          # Custom exception hierarchy
-│       ├── ingestion/
-│       │   ├── chunker.py         # Sliding-window chunker (15% overlap)
-│       │   ├── embedder.py        # Bedrock Titan Embed v2 wrapper
-│       │   └── faiss_writer.py   # FAISS index writer (S3-backed)
-│       └── monitoring/
-│           ├── lineage.py         # SageMaker Lineage API helpers
-│           └── experiments.py     # SageMaker Experiments logger
+├── src/chitrakatha/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── exceptions.py
+│   ├── ingestion/
+│   │   ├── chunker.py
+│   │   ├── embedder.py
+│   │   └── pgvector_writer.py    # replaces faiss_writer.py
+│   └── monitoring/
+│       ├── lineage.py
+│       └── experiments.py
 │
 ├── pipeline/
-│   ├── pipeline.py                # SageMaker Pipeline DAG
-│   ├── requirements.txt
+│   ├── pipeline.py
+│   ├── Dockerfile                # custom ECR training image
+│   ├── requirements.txt          # exact-pinned versions
 │   └── steps/
-│       ├── preprocessing.py       # Step 1: Bronze → Silver (corpus + training split)
-│       ├── embed_and_index.py     # Step 2a: Flow A — corpus → FAISS-on-S3
-│       ├── synthesize_pairs.py    # Step 2b: Flow B — chunks → Claude → Gold Q&A
-│       ├── train.py               # Step 3: QLoRA fine-tune on Gold Q&A
-│       └── evaluate.py            # Step 4: ROUGE-L, BERTScore, cross-lingual
+│       ├── preprocessing.py
+│       ├── embed_and_index.py    # updated: FAISS → pgvector
+│       ├── synthesize_pairs.py
+│       ├── train.py
+│       └── evaluate.py
 │
 ├── serving/
-│   ├── deploy_endpoint.py         # Serverless endpoint deploy script
-│   ├── inference.py               # Model server (RAG predict_fn)
+│   ├── deploy_endpoint.py        # benchmarking only (not live serving)
+│   ├── inference.py              # rewritten: pgvector + Bedrock Qwen3
 │   └── lambda/
-│       ├── handler.py             # Lambda bridge (API GW → SageMaker)
+│       ├── handler.py
 │       └── requirements.txt
 │
-├── data/
-│   └── scripts/
-│       ├── upload_to_bronze.py          # Drop raw data → S3 Bronze
-│       ├── ingest_to_faiss.py          # Flow A: Silver corpus → FAISS-on-S3
-│       └── synthesize_training_pairs.py  # Flow B: Silver chunks → Claude → Gold Q&A
+├── data/scripts/
+│   ├── upload_to_bronze.py
+│   └── synthesize_training_pairs.py
 │
 └── tests/
     ├── unit/
-    │   ├── test_chunker.py        # Sliding window logic, Devanagari preservation
-    │   ├── test_embedder.py       # Mocked Bedrock calls (moto)
-    │   ├── test_preprocessor.py   # Unicode normalization, dedup
-    │   ├── test_faiss_writer.py  # Mocked FAISS/S3 (moto)
-    │   └── test_lambda_handler.py # Pydantic validation, language detection
+    │   ├── test_chunker.py
+    │   ├── test_embedder.py
+    │   ├── test_preprocessor.py
+    │   ├── test_pgvector_writer.py   # replaces test_faiss_writer.py
+    │   └── test_lambda_handler.py
     └── integration/
-        └── test_pipeline_dag.py   # Validates pipeline step definitions (no AWS calls)
+        └── test_pipeline_dag.py
 ```
+
+---
+
+## Cleanup — Remove Before / During Implementation
+
+Everything below must be cleaned up as part of the migration. Nothing here should exist in the final architecture.
+
+### Terraform — remove resources
+
+- [ ] `infra/terraform/s3.tf` — delete S3 Vectors bucket resource + lifecycle policy + versioning config (remove `prevent_destroy = true` first, then `terraform destroy` the bucket after emptying it)
+- [ ] `infra/terraform/faiss_index.tf` — delete entire file; replaced by `pgvector.tf`
+- [ ] `infra/terraform/outputs.tf` — remove `s3_vectors_bucket`, `s3_vectors_bucket_arn`, `s3_faiss_index_prefix` outputs
+- [ ] `infra/terraform/iam.tf` — remove vectors bucket ARN from `S3ReadWriteProjectBuckets` statement in SageMaker role
+- [ ] `infra/terraform/iam.tf` — remove `S3ReadJumpStartPrivateCache` statement (no longer using JumpStart)
+- [ ] `infra/terraform/iam.tf` — remove `sagemaker:InvokeEndpoint` from Lambda policy (Lambda calls Bedrock now)
+- [ ] `infra/terraform/lambda.tf` — remove `SAGEMAKER_ENDPOINT_NAME` env var from Lambda function
+
+### Code — delete files entirely
+
+- [ ] `src/chitrakatha/ingestion/faiss_writer.py` — replaced by `pgvector_writer.py`
+- [ ] `data/scripts/ingest_to_faiss.py` — Flow A orchestration script for FAISS; replaced by pgvector insert in `embed_and_index.py`
+- [ ] `tests/unit/test_faiss_writer.py` — replaced by `tests/unit/test_pgvector_writer.py`
+
+### Code — keep but repurpose
+
+- [ ] `serving/deploy_endpoint.py` — remove from live serving path; keep for on-demand benchmarking only (deploy fine-tuned Qwen, compare vs Qwen3 RAG, scale back to 0)
+
+### Code — rewrite in place
+
+- [ ] `serving/inference.py` — Qwen generation → Bedrock Qwen3 Next 80B A3B + pgvector retrieval
+- [ ] `serving/lambda/handler.py` — new request/response contract + Bedrock call; remove 503 cold start logic
+- [ ] `pipeline/steps/embed_and_index.py` — FAISS S3 upload → pgvector insert
+- [ ] `src/chitrakatha/exceptions.py` — rename `S3VectorError` → `PgVectorError`
+
+### Manual AWS cleanup (one-time, after Terraform changes)
+
+- [ ] Empty S3 Vectors bucket before destroying (Terraform cannot destroy non-empty buckets)
+- [ ] Delete SageMaker real-time endpoint if currently deployed (not needed for live traffic; spin up on-demand for benchmarking only)
 
 ---
 
@@ -505,24 +541,19 @@ graph LR
     P5 --> P6
 ```
 
-> **Note:** Phase 6 (CI/CD) can be scaffolded in parallel with Phase 1, but the `ct.yml` trigger workflow requires the pipeline to exist (Phase 3).
-
 ---
 
-## Key Decisions & Open Questions
+## Key Decisions
 
-> [!IMPORTANT]
-> **Before execution begins, please confirm the following decisions:**
-
-| # | Decision | Options | **Decision** |
+| # | Decision | Options Considered | **Decision** |
 |---|---|---|---|
-| 1 | **Base LLM source** | HuggingFace Hub (requires token) vs SageMaker JumpStart | ✅ **JumpStart** (`meta-textgeneration-llama-3-1-8b-instruct`) — 100% within AWS, no external credentials |
-| 2 | **Training instance** | `ml.g5.2xlarge` (24GB VRAM, ~$1.215/hr Spot) vs `ml.g5.4xlarge` | ✅ **g5.2xlarge** (sufficient for QLoRA 4-bit) |
-| 3 | **Q&A pairs per chunk** | 3 pairs per chunk (default) vs 5 pairs | ✅ **3 pairs** — keeps Bedrock cost low while scaling with corpus size |
-| 4 | **IaC tool** | Terraform (primary req.) vs AWS CDK | ✅ **Terraform** (per project-requirement.md) |
-| 5 | **Frontend** | Scope limited to Lambda API only, or include a lightweight UI? | ✅ **Lambda API only** |
-| 6 | **RAG Strategy** | Managed Bedrock KB vs FAISS-on-S3 | ✅ **FAISS-on-S3** — index stored in S3, cached in RAM at inference; Scale-to-Zero compatible |
-
-> [!IMPORTANT]
-> **Production Refactor (FAISS-on-S3):** 
-> As of Phase 2, the project was refactored to use **FAISS-over-S3** instead of the native (and currently unavailable) `s3vectors` Boto3 client. This provides a functional, production-ready "Scale-to-Zero" vector search by storing the index as a persistent file in S3 and caching it in RAM during inference. This approach satisfies all architectural constraints in `AGENTS.md` while ensuring the project is deployable today.
+| 1 | **Base LLM** | Llama 3.2 3B (JumpStart) vs Qwen2.5-3B (HuggingFace) | ✅ **Qwen2.5-3B-Instruct** — better Hindi/Devanagari, Apache 2.0 (no approval), JumpStart was brittle |
+| 2 | **Base model source** | HuggingFace Hub (external, runtime) vs S3 cache | ✅ **S3 Gold bucket** — cached once at `s3://chitrakatha-gold/base-models/qwen2.5-3b-instruct/`, passed as `SM_CHANNEL_MODEL`; removes external dependency |
+| 3 | **Training instance** | Spot `ml.g4dn.xlarge` vs on-demand | ✅ **On-demand** — Spot quota is 0 in ap-southeast-2 |
+| 4 | **Q&A pairs per chunk** | 3 vs 5 | ✅ **3 pairs** — keeps Bedrock cost low while scaling with corpus size |
+| 5 | **IaC tool** | Terraform vs CDK | ✅ **Terraform** |
+| 6 | **Vector store** | FAISS-on-S3 vs pgvector vs OpenSearch | ✅ **pgvector on RDS PostgreSQL** — hybrid search (vector + SQL filters), concurrent writes, AWS-native, open source; no cold start for RAG retrieval |
+| 7 | **Website chatbot serving** | SageMaker GPU endpoint (fine-tuned Qwen) vs Bedrock Qwen3 + RAG | ✅ **Bedrock Qwen3 Next 80B A3B + pgvector RAG** — no GPU cold start, no standing GPU cost, works in ap-southeast-2, stronger Hindi than Claude models available in region |
+| 8 | **Fine-tuned Qwen role** | Production serving vs benchmarking only | ✅ **Benchmarking only** — model trained via QLoRA+RAFT pipeline; deployed on-demand to compare quality vs Qwen3 RAG; not in live serving path |
+| 9 | **Networking** | Public RDS vs private + NAT Gateway vs private + VPC endpoints | ✅ **Option B: private RDS + VPC endpoints** — no NAT Gateway (~$55 AUD/month saved); custom ECR Docker pre-bakes deps; most secure |
+| 10 | **Training container** | SageMaker-managed (runtime pip install) vs custom ECR image | ✅ **Custom ECR image** — eliminates supply chain risk, reproducible, rebuilt only when `requirements.txt` changes |

@@ -79,12 +79,12 @@ class TestEmbedChunks:
     def test_wrong_dimension_raises(self) -> None:
         """A vector with unexpected dimension raises ``BedrockEmbeddingError``."""
         chunk = _make_chunk("Some text.")
-        wrong_dim_emb = [0.1] * 512  # Wrong: should be 1536
+        wrong_dim_emb = [0.1] * 512  # Wrong: should be 1024
 
         mock_client = MagicMock()
         mock_client.invoke_model.return_value = _mock_bedrock_response(wrong_dim_emb)
 
-        with pytest.raises(BedrockEmbeddingError, match="1536"):
+        with pytest.raises(BedrockEmbeddingError, match="1024"):
             embed_chunks([chunk], aws_region="ap-southeast-2", bedrock_client=mock_client)
 
     def test_empty_chunks_raises_value_error(self) -> None:
@@ -132,8 +132,8 @@ class TestEmbedChunks:
 class TestEmbedQuery:
     """Tests for ``embed_query`` (live inference path)."""
 
-    def test_query_returns_1536_dim_vector(self) -> None:
-        """A valid query returns a 1536-dim embedding."""
+    def test_query_returns_1024_dim_vector(self) -> None:
+        """A valid query returns a 1024-dim embedding."""
         fake_emb = [0.2] * _EXPECTED_DIM
         mock_client = MagicMock()
         mock_client.invoke_model.return_value = _mock_bedrock_response(fake_emb)

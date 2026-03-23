@@ -7,10 +7,9 @@
 #      re-point the pipeline to any historical Silver or Gold snapshot.
 #
 # Buckets:
-#   1. Bronze  — raw ingest (articles, transcripts, Excel, synopsis)
-#   2. Silver  — cleaned JSONL (preprocessing output)
-#   3. Gold    — fine-tuning JSONL, model checkpoints, evaluation results
-#   4. Vectors — Bucket for FAISS index (holds the RAG index)
+#   1. Bronze — raw ingest (articles, transcripts, Excel, synopsis)
+#   2. Silver — cleaned JSONL (preprocessing output)
+#   3. Gold   — fine-tuning JSONL, model checkpoints, evaluation results
 #
 # Constraints:
 #   - All buckets: versioning ENABLED, KMS CMK encryption, public access BLOCKED.
@@ -24,10 +23,9 @@ locals {
 
   # Bucket names include account ID to guarantee global uniqueness.
   bucket_names = {
-    bronze  = "${var.project_name}-bronze-${local.account_id}"
-    silver  = "${var.project_name}-silver-${local.account_id}"
-    gold    = "${var.project_name}-gold-${local.account_id}"
-    vectors = "${var.project_name}-vectors-${local.account_id}"
+    bronze = "${var.project_name}-bronze-${local.account_id}"
+    silver = "${var.project_name}-silver-${local.account_id}"
+    gold   = "${var.project_name}-gold-${local.account_id}"
   }
 }
 
@@ -219,42 +217,3 @@ resource "aws_s3_bucket_lifecycle_configuration" "gold" {
   }
 }
 
-###############################################################################
-# Vectors — FAISS Index Bucket
-#
-# Why: Stores the FAISS index file for "Scale-to-Zero" RAG.
-###############################################################################
-
-resource "aws_s3_bucket" "vectors" {
-  bucket = local.bucket_names.vectors
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "aws_s3_bucket_versioning" "vectors" {
-  bucket = aws_s3_bucket.vectors.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "vectors" {
-  bucket = aws_s3_bucket.vectors.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.chitrakatha.arn
-    }
-    bucket_key_enabled = true
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "vectors" {
-  bucket                  = aws_s3_bucket.vectors.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}

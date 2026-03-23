@@ -39,10 +39,9 @@ class Settings(BaseSettings):
     s3_bronze_bucket: str = Field(..., alias="S3_BRONZE_BUCKET")
     s3_silver_bucket: str = Field(..., alias="S3_SILVER_BUCKET")
     s3_gold_bucket: str = Field(..., alias="S3_GOLD_BUCKET")
-    s3_vectors_bucket: str = Field(..., alias="S3_VECTORS_BUCKET")
 
-    # -- FAISS Index (required) ------------------------------------------
-    s3_faiss_index_prefix: str = Field(..., alias="S3_FAISS_INDEX_PREFIX")
+    # -- RDS pgvector (required) ----------------------------------------------
+    db_secret_arn: str = Field(..., alias="DB_SECRET_ARN")
 
     # -- KMS & IAM (required) -------------------------------------------------
     kms_key_arn: str = Field(..., alias="KMS_KEY_ARN")

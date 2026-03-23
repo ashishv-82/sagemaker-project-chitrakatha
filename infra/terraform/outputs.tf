@@ -62,21 +62,6 @@ output "s3_gold_bucket_arn" {
   value       = aws_s3_bucket.gold.arn
 }
 
-output "s3_vectors_bucket" {
-  description = "Name of the S3 Vectors bucket. Use as `VECTORS_BUCKET` env var in faiss_writer.py and inference.py."
-  value       = aws_s3_bucket.vectors.id
-}
-
-output "s3_vectors_bucket_arn" {
-  description = "ARN of the S3 Vectors bucket."
-  value       = aws_s3_bucket.vectors.arn
-}
-
-output "s3_faiss_index_prefix" {
-  description = "Prefix of the FAISS index stored in S3. Injected into the serverless endpoint environment as `S3_FAISS_INDEX_PREFIX`."
-  value       = local.s3_faiss_index_prefix
-}
-
 output "secret_arn" {
   description = "ARN of the Secrets Manager secret for the synthetic data API key. Use as `SECRET_ARN` env var in synthesize_training_pairs.py."
   value       = aws_secretsmanager_secret.synthetic_data_api_key.arn
@@ -114,4 +99,24 @@ output "sagemaker_studio_domain_id" {
 output "sagemaker_studio_url" {
   description = "Direct link to open SageMaker Studio in the AWS console."
   value       = "https://${var.aws_region}.console.aws.amazon.com/sagemaker/home?region=${var.aws_region}#/studio/${aws_sagemaker_domain.chitrakatha.id}/open?profileName=${var.studio_user_profile_name}"
+}
+
+output "rds_endpoint" {
+  description = "RDS PostgreSQL endpoint (host:port). Use as DB_HOST env var in pipeline steps."
+  value       = aws_db_instance.chitrakatha.endpoint
+}
+
+output "rds_secret_arn" {
+  description = "ARN of the Secrets Manager secret holding RDS credentials. Use as DB_SECRET_ARN env var."
+  value       = aws_secretsmanager_secret.rds_credentials.arn
+}
+
+output "lambda_security_group_id" {
+  description = "Security group ID of the Lambda function. Use when granting other resources access to Lambda."
+  value       = aws_security_group.lambda.id
+}
+
+output "private_subnet_ids" {
+  description = "IDs of the private subnets (RDS + Lambda). Use for SageMaker processing jobs that need RDS access."
+  value       = [aws_subnet.private_a.id, aws_subnet.private_b.id]
 }

@@ -172,7 +172,7 @@ def embed_query(
         bedrock_client: Optional pre-built client (for testing).
 
     Returns:
-        1536-dim embedding vector.
+        1024-dim embedding vector.
 
     Raises:
         BedrockEmbeddingError: On API failure.

@@ -68,8 +68,7 @@ BRONZE_BUCKET = os.environ["BRONZE_BUCKET"]
 SILVER_BUCKET = os.environ["SILVER_BUCKET"]
 GOLD_BUCKET = os.environ["GOLD_BUCKET"]
 KMS_KEY_ARN = os.environ["KMS_KEY_ARN"]
-VECTORS_BUCKET = os.environ["VECTORS_BUCKET"]
-FAISS_INDEX_PREFIX = os.environ.get("FAISS_INDEX_PREFIX", "faiss-index")
+DB_SECRET_ARN = os.environ["DB_SECRET_ARN"]
 
 PIPELINE_NAME = "chitrakatha-mlops-pipeline"
 
@@ -160,8 +159,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
         "S3_BRONZE_BUCKET": BRONZE_BUCKET,
         "S3_SILVER_BUCKET": SILVER_BUCKET,
         "S3_GOLD_BUCKET": GOLD_BUCKET,
-        "S3_VECTORS_BUCKET": VECTORS_BUCKET,
-        "S3_FAISS_INDEX_PREFIX": FAISS_INDEX_PREFIX,
+        "DB_SECRET_ARN": DB_SECRET_ARN,
         "KMS_KEY_ARN": KMS_KEY_ARN,
         "SAGEMAKER_ROLE_ARN": ROLE_ARN,
         "AWS_REGION": AWS_REGION,

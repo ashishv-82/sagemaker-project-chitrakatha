@@ -13,10 +13,10 @@ terraform {
   # block until the first apply finishes.
 
   backend "s3" {
-    bucket         = "project-chitrakatha-tf-state-54c4cc5f"
+    bucket         = "chitrakatha-tf-state-54c4cc5f"
     key            = "dev/terraform.tfstate"
     region         = "ap-southeast-2"
     encrypt        = true
-    dynamodb_table = "project-chitrakatha-tf-lock"
+    dynamodb_table = "chitrakatha-tf-lock"
   }
 }

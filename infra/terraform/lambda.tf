@@ -43,12 +43,19 @@ resource "aws_lambda_function" "api_bridge" {
   runtime          = "python3.12"
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-  timeout          = 30
-  memory_size      = 256
+  timeout     = 60
+  memory_size = 256
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_group_ids = [aws_security_group.lambda.id]
+  }
 
   environment {
     variables = {
-      SAGEMAKER_ENDPOINT_NAME = "${var.project_name}-rag-serverless"
+      DB_SECRET_ARN          = aws_secretsmanager_secret.rds_credentials.arn
+      BEDROCK_QWEN3_MODEL_ID = "qwen.qwen3-next-80b-a3b"
+      BEDROCK_EMBED_MODEL_ID = "amazon.titan-embed-text-v2:0"
     }
   }
 

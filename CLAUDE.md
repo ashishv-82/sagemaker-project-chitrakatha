@@ -6,11 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Project Chitrakatha** is a bilingual (English + Devanagari Hindi) Indian Comic History LLM on AWS SageMaker. It is 100% serverless (~$5/month baseline) using RAFT (Retrieval-Augmented Fine-Tuning) to fine-tune Llama 3.2 3B Instruct on domain-specific Q&A pairs synthesized by Claude 3.5 Sonnet.
 
-**Data flow:** S3 Bronze (raw PDFs/VTTs) → SKLearnProcessor Preprocessing → S3 Silver (JSONL chunks) → parallel:
-- **Flow A:** Titan Embed v2 → FAISS-on-S3 index
-- **Flow B:** Claude 3.5 Sonnet → RAFT training pairs (90% train / 10% eval split)
+**Two-speed architecture:**
+- **Flow A (website):** Titan Embed v2 → pgvector RDS → Bedrock Qwen3 Next 80B A3B → Lambda + API Gateway
+- **Flow B (benchmarking):** Claude 3.5 Sonnet → RAFT training pairs → QLoRA fine-tune Qwen2.5-3B → evaluate
 
-→ QLoRA fine-tune Llama 3.2 3B (Spot) → evaluate (ROUGE-L ≥0.35, distractor_robustness ≥0.70) → SageMaker Model Registry → Serverless Endpoint → Lambda + API Gateway
+**Data flow:** S3 Bronze (raw PDFs/VTTs) → SKLearnProcessor Preprocessing → S3 Silver (JSONL chunks) → parallel:
+- **Flow A:** Titan Embed v2 → pgvector RDS (RDS PostgreSQL 16 + pgvector, private subnet, Option B networking)
+- **Flow B:** Claude 3.5 Sonnet → RAFT Q&A pairs (90% train / 10% eval split) → QLoRA Qwen2.5-3B
 
 ## Commands
 
@@ -25,15 +27,15 @@ make tf-apply     # terraform apply
 make pipeline-run # python pipeline/pipeline.py --execute
 ```
 
-Run a single test file: `pytest tests/unit/test_faiss_writer.py -v`
+Run a single test file: `pytest tests/unit/test_pgvector_writer.py -v`
 
 ## Architecture
 
 ### Core Library (`src/chitrakatha/`)
 - **`config.py`** — Pydantic v2 `BaseSettings`. All config is environment-variable-driven (no hardcoded values). `get_settings()` is LRU-cached. All SageMaker Processing Job steps instantiate `Settings()` directly.
-- **`exceptions.py`** — Custom hierarchy rooted at `ChitrakathaBaseError`: `BedrockSynthesisError`, `BedrockEmbeddingError`, `S3VectorError`, `DataIngestionError`, `SageMakerPipelineError`.
-- **`ingestion/embedder.py`** — Titan Embed Text v2 wrapper. Max batch size 25 (Bedrock API hard limit). Bedrock Titan has no batch API, so "batching" is sequential calls.
-- **`ingestion/faiss_writer.py`** — FAISS-on-S3 pattern: download index → append vectors → upload. Uses `IndexFlatIP` with L2-normalized vectors (cosine similarity). S3 raises `NoSuchKey` not `"404"` for missing objects.
+- **`exceptions.py`** — Custom hierarchy rooted at `ChitrakathaBaseError`: `BedrockSynthesisError`, `BedrockEmbeddingError`, `PgVectorError`, `DataIngestionError`, `SageMakerPipelineError`.
+- **`ingestion/embedder.py`** — Titan Embed Text v2 wrapper. Max batch size 25 (Bedrock API hard limit). Output is 1024-dim vectors.
+- **`ingestion/pgvector_writer.py`** — Writes embeddings to pgvector RDS. Schema init (`CREATE EXTENSION/TABLE/INDEX IF NOT EXISTS`) runs on every call (idempotent). Idempotency key: `UNIQUE(source_document, chunk_index)`. Credentials fetched from Secrets Manager via `DB_SECRET_ARN`.
 - **`monitoring/experiments.py`** — Logs metrics to SageMaker Experiments.
 
 ### Pipeline (`pipeline/pipeline.py`)
@@ -45,12 +47,12 @@ SageMaker Pipeline DAG using `PipelineSession`. Steps use `ProcessingStep(step_a
 
 Pipeline constructor does **not** accept `tags=`. Tags are applied via `pipeline.upsert(role_arn=..., tags=RESOURCE_TAGS)` only.
 
-JumpStart base model: `meta-textgeneration-llama-3-2-3b-instruct`. `JumpStartEstimator` requires `accept_eula=True`. GitHub Actions role needs `s3:GetObject` on `jumpstart-cache-prod-{region}/*`.
+Base model: `Qwen/Qwen2.5-3B-Instruct` (HuggingFace Hub, Apache 2.0). Cached to S3 Gold bucket at `base-models/qwen2.5-3b-instruct/` via `scripts/cache_base_model_to_s3.py`. Training uses `PyTorchEstimator` with `SM_CHANNEL_MODEL` to load weights from S3 (no internet download at runtime).
 
 ### Serving (`serving/`)
-- **`inference.py`** — SageMaker endpoint entry point. Downloads FAISS index to RAM on first call (module-level cache). RAG flow: embed query → FAISS top-k retrieval → Llama generation.
-- **`deploy_endpoint.py`** — Deploys serverless endpoint + two App Auto Scaling policies: (1) target tracking on `SageMakerVariantInvocationsPerInstance` for scale-in; (2) step scaling on `HasBacklogWithoutCapacity` to wake from 0 instances.
-- **`lambda/handler.py`** — API Gateway bridge. Detects Devanagari input (`[\u0900-\u097F]`) to tag response language. Returns HTTP 503 with `Retry-After: 300` when endpoint is at 0 instances. Lambda deployment package lives in `serving/lambda/package/` and `function.zip`; rebuilt by `terraform apply` via `null_resource.pip_install_lambda`.
+- **`inference.py`** — SageMaker endpoint entry point for the fine-tuned Qwen2.5-3B model (benchmarking path only). Loads model from `model_dir` and generates answers with retrieved context.
+- **`deploy_endpoint.py`** — Deploys serverless endpoint + two App Auto Scaling policies.
+- **`lambda/handler.py`** — **Primary serving path.** API Gateway bridge that does the full RAG loop: embed query (Bedrock Titan Embed v2) → retrieve top-5 from pgvector RDS → generate with Bedrock Qwen3 Next 80B A3B (`qwen.qwen3-next-80b-a3b`). Detects Devanagari to tag `language` as `"hi"`. Lambda env vars: `DB_SECRET_ARN`, `BEDROCK_QWEN3_MODEL_ID`, `BEDROCK_EMBED_MODEL_ID`. Deployment package in `serving/lambda/package/` + `function.zip`; rebuilt by `terraform apply` via `null_resource.pip_install_lambda`.
 
 ### Infrastructure (`infra/terraform/`)
 - Terraform ≥1.7, AWS provider ~5.90, region `ap-southeast-2`

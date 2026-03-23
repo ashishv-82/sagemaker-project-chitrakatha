@@ -22,8 +22,8 @@ class BedrockSynthesisError(ChitrakathaBaseError):
     pass
 
 
-class S3VectorError(ChitrakathaBaseError):
-    """Raised when interacting with S3 Vectors index fails."""
+class PgVectorError(ChitrakathaBaseError):
+    """Raised when interacting with the pgvector RDS database fails."""
     pass
 
 

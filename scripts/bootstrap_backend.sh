@@ -9,8 +9,8 @@ set -e
 
 REGION="${1:-ap-southeast-2}"
 UUID=$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c 1-8)
-STATE_BUCKET="project-chitrakatha-tf-state-${UUID}"
-LOCK_TABLE="project-chitrakatha-tf-lock"
+STATE_BUCKET="chitrakatha-tf-state-${UUID}"
+LOCK_TABLE="chitrakatha-tf-lock"
 
 echo "============================================================"
 echo "🚀 Bootstrapping Terraform Backend for Project Chitrakatha"

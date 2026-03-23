@@ -1,21 +1,19 @@
-"""SageMaker Processing step: Flow A — Silver /corpus/ → S3 Vectors index.
+"""SageMaker Processing step: Flow A — Silver /corpus/ → pgvector RDS index.
 
-Why: This step runs after preprocessing.py and is responsible for building
-     the RAG knowledge base. It reads the corpus JSONL produced by
-     preprocessing.py, chunks and embeds each document, and writes vectors
-     to the S3 Vectors index.
-
-     Running as a SageMaker Processing Job ensures idempotent, reproducible
-     execution with automatic lineage tracking — the vector count is logged
-     to SageMaker Experiments so we can track knowledge base growth over runs.
+Why: Reads the corpus JSONL produced by preprocessing.py, embeds each chunk
+     via Bedrock Titan Embed v2, and upserts vectors into the pgvector RDS table.
+     Running as a SageMaker Processing Job ensures reproducible execution with
+     automatic lineage tracking — vector counts are logged to SageMaker Experiments.
 
 Input channel (SageMaker):
     /opt/ml/processing/input/corpus — corpus.jsonl from preprocessing step
 
+Idempotency: pgvector uses ON CONFLICT (source_document, chunk_index) DO NOTHING,
+             so re-running this step never duplicates rows.
+
 Constraints:
-    - Idempotent: skips re-embedding of already-indexed chunks.
-    - Logs ``vector_count_written`` metric to SageMaker Experiments run.
     - Exits with code 1 on any embedding or write failure.
+    - Logs ``vector_count_written`` metric to SageMaker Experiments run.
 """
 
 from __future__ import annotations
@@ -23,11 +21,11 @@ from __future__ import annotations
 import subprocess
 import sys
 
-# These packages are not pre-installed in the ScriptProcessor container.
-# Install before any chitrakatha imports that depend on them.
+# Install runtime deps before any chitrakatha imports.
 subprocess.check_call([
     sys.executable, "-m", "pip", "install",
-    "pydantic>=2.5.0", "pydantic-settings>=2.2.0", "faiss-cpu>=1.8.0",
+    "pydantic>=2.5.0", "pydantic-settings>=2.2.0",
+    "psycopg2-binary>=2.9.0", "pgvector>=0.3.0",
     "numpy>=1.26.0", "pytz",
     "--quiet",
 ])
@@ -35,55 +33,22 @@ subprocess.check_call([
 import json
 import logging
 import os
-import pickle
-import sys
-import tempfile
 from pathlib import Path
 
-import boto3
-from botocore.exceptions import ClientError
-
 from chitrakatha.config import Settings
-from chitrakatha.exceptions import BedrockEmbeddingError, DataIngestionError, S3VectorError
+from chitrakatha.exceptions import BedrockEmbeddingError, DataIngestionError, PgVectorError
 from chitrakatha.ingestion.chunker import chunk_text
 from chitrakatha.ingestion.embedder import embed_chunks
-from chitrakatha.ingestion.faiss_writer import write_vectors
+from chitrakatha.ingestion.pgvector_writer import write_vectors
 from chitrakatha.monitoring.experiments import log_metrics
 
 logger = logging.getLogger(__name__)
 
-# SageMaker Processing Job channel mount point for corpus input.
 INPUT_CORPUS_PATH = Path("/opt/ml/processing/input/corpus/corpus.jsonl")
 
 
-def _load_existing_vector_ids(settings: Settings) -> set[str]:
-    """Pre-load existing vector IDs for idempotency by reading the FAISS metadata.
-    
-    Returns empty set if the index doesn't exist yet.
-    """
-    s3 = boto3.client("s3", region_name=settings.aws_region)
-    prefix = settings.s3_faiss_index_prefix.strip("/")
-    existing: set[str] = set()
-    
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        meta_path = os.path.join(tmp_dir, "metadata.pkl")
-        try:
-            s3.download_file(settings.s3_vectors_bucket, f"{prefix}/metadata.pkl", meta_path)
-            with open(meta_path, "rb") as f:
-                metadata_map = pickle.load(f)
-                # The metadata values in our new FAISS writer contain the original chunk_id
-                # (via _build_metadata -> chunk.chunk_id wasn't explicit but I should add it
-                # to the metadata dict to make this lookup easy).
-                for meta in metadata_map.values():
-                    if "chunk_id" in meta:
-                        existing.add(meta["chunk_id"])
-        except ClientError:
-            logger.info("No existing vector metadata found. Starting fresh.")
-    return existing
-
-
 def run(settings: Settings, experiment_run_name: str | None = None) -> int:
-    """Embed and index Silver corpus into S3 Vectors.
+    """Embed Silver corpus chunks and write to pgvector RDS.
 
     Args:
         settings: Runtime settings from environment.
@@ -95,9 +60,6 @@ def run(settings: Settings, experiment_run_name: str | None = None) -> int:
     if not INPUT_CORPUS_PATH.exists():
         logger.error("Corpus input file not found: %s", INPUT_CORPUS_PATH)
         return 1
-
-    existing_ids = _load_existing_vector_ids(settings)
-    logger.info("Pre-loaded %d existing vector ID(s) for idempotency.", len(existing_ids))
 
     raw_lines = INPUT_CORPUS_PATH.read_text(encoding="utf-8").splitlines()
     errors = 0
@@ -123,29 +85,24 @@ def run(settings: Settings, experiment_run_name: str | None = None) -> int:
             chunk_embeddings = embed_chunks(chunks, aws_region=settings.aws_region)
             written = write_vectors(
                 chunk_embeddings,
-                bucket_name=settings.s3_vectors_bucket,
-                index_name=settings.s3_faiss_index_prefix,
+                db_secret_arn=settings.db_secret_arn,
                 aws_region=settings.aws_region,
-                extra_metadata={
-                    "language": language,
-                    "source_document": source_document,
-                },
-                existing_ids=existing_ids,
             )
             total_written += written
-            for chunk, _ in chunk_embeddings:
-                existing_ids.add(chunk.chunk_id)
+            logger.info(
+                "Document '%s' (lang=%s): %d chunk(s), %d newly written.",
+                source_document, language, len(chunks), written,
+            )
 
-        except (DataIngestionError, BedrockEmbeddingError, S3VectorError) as exc:
+        except (DataIngestionError, BedrockEmbeddingError, PgVectorError) as exc:
             logger.error("Failed document '%s': %s", source_document, exc)
             errors += 1
 
     logger.info(
-        "embed_and_index complete. New vectors written: %d. Errors: %d.",
+        "embed_and_index complete. Total new vectors: %d. Errors: %d.",
         total_written, errors,
     )
 
-    # Log vector count to SageMaker Experiments for tracking knowledge base growth.
     if experiment_run_name:
         log_metrics(
             run_name=experiment_run_name,
