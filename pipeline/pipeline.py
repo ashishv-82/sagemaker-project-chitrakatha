@@ -340,6 +340,12 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
                 s3_data=step_synthesize.properties.ProcessingOutputConfig.Outputs["gold_train"].S3Output.S3Uri,
                 content_type="application/x-ndjson",
             ),
+            # Pre-cached Qwen2.5-3B weights — avoids HuggingFace download at training time.
+            # Mounted at /opt/ml/input/data/model/ → SM_CHANNEL_MODEL env var.
+            "model": sagemaker.inputs.TrainingInput(
+                s3_data=f"s3://{GOLD_BUCKET}/base-models/qwen2.5-3b-instruct/",
+                input_mode="File",
+            ),
         },
         depends_on=[step_embed, step_synthesize],
     )

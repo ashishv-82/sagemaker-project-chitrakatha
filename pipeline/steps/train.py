@@ -3,7 +3,7 @@
 Why: Standard SFT (question→answer) teaches the model to recall facts. RAFT
      fine-tuning (question + golden document + distractors → answer) teaches
      it the skill of reading and selecting from retrieved context — which is
-     exactly what it faces at inference time when querying the S3 Vectors index.
+     exactly what it faces at inference time when querying the pgvector index.
 
      QLoRA (4-bit quantization + LoRA adapters) makes fine-tuning a 8B model
      feasible on a single g5.2xlarge Spot instance (24GB VRAM) in ~1-2 hours.
@@ -56,11 +56,15 @@ logger = logging.getLogger(__name__)
 
 # SageMaker channel mount points.
 INPUT_GOLD_DIR = Path(os.environ.get("SM_CHANNEL_TRAINING", "/opt/ml/input/data/training"))
+# SM_CHANNEL_MODEL is set when pipeline.py passes an S3 model input channel.
+# Falls back to HuggingFace Hub ID for local/ad-hoc runs without the S3 cache.
+_SM_CHANNEL_MODEL = os.environ.get("SM_CHANNEL_MODEL", "")
+MODEL_SOURCE = _SM_CHANNEL_MODEL if _SM_CHANNEL_MODEL else "Qwen/Qwen2.5-3B-Instruct"
 MODEL_OUTPUT_DIR = Path(os.environ.get("SM_MODEL_DIR", "/opt/ml/model"))
 CHECKPOINT_DIR = Path(os.environ.get("SM_OUTPUT_DATA_DIR", "/opt/ml/output/data")) / "checkpoints"
 
 # Hyperparameters (overridable via SageMaker TrainingJob hyperparameters dict).
-MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")
+MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")  # kept for hparam logging
 LORA_R = int(os.environ.get("LORA_R", "16"))
 LORA_ALPHA = int(os.environ.get("LORA_ALPHA", "32"))
 LORA_DROPOUT = float(os.environ.get("LORA_DROPOUT", "0.05"))
@@ -172,18 +176,19 @@ def main() -> None:
         bnb_4bit_use_double_quant=True,
     )
 
-    # Qwen2.5 is Apache 2.0 — no token or EULA required.
-    logger.info("Downloading base model from HuggingFace Hub: %s", MODEL_ID)
+    # Load from SM_CHANNEL_MODEL (S3 cache) if available; otherwise HuggingFace Hub.
+    # In CI/CD the pipeline always passes the S3 cache — avoids runtime HF downloads.
+    logger.info("Loading base model from: %s", MODEL_SOURCE)
 
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
+        MODEL_SOURCE,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=False,
     )
     model = prepare_model_for_kbit_training(model)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=False)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_SOURCE, trust_remote_code=False)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
