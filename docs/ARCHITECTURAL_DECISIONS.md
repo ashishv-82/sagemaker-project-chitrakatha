@@ -156,31 +156,24 @@ Spin up SageMaker endpoint → run eval queries → compare vs Qwen3 RAG → sca
 - One-time S3 model cache: `huggingface-cli download Qwen/Qwen2.5-3B-Instruct → aws s3 sync s3://chitrakatha-gold/base-models/qwen2.5-3b-instruct/`
 - Update `pipeline/pipeline.py` training step to mount `SM_CHANNEL_MODEL` from S3
 
-### API Contract (designed for future multi-turn, no changes needed later)
+### API Contract
 
 ```json
 // Request
-{
-  "query": "Who created Nagraj?",
-  "session_id": "abc123",
-  "history": []
-}
+{ "query": "Who created Nagraj?" }
 
 // Response
-{
-  "answer": "Nagraj was created by...",
-  "language": "en",
-  "session_id": "abc123"
-}
+{ "answer": "Nagraj was created by...", "language": "en", "sources": ["raj_comics_1990.txt"] }
 ```
 
-`history` is an empty array today. When conversation memory is added later, Lambda reads it and passes prior turns to Qwen3 — no API contract change needed.
+`language` is `"hi"` when the query contains Devanagari characters (`[\u0900-\u097F]`), otherwise `"en"`.
+`sources` is a deduplicated, sorted list of `source_document` values from retrieved chunks; `[]` if no chunks found.
 
-### Defer (later, no rework needed)
+### Defer (later)
 
 | Item | What it needs |
 |---|---|
-| Conversation history | DynamoDB session store keyed by `session_id` (field already in contract) |
+| Conversation history | DynamoDB session store; add `session_id` + `history` to contract when ready |
 | API authentication | API Gateway usage plan + API key or Cognito |
 | Rate limiting | API Gateway throttling settings |
 | Frontend / chat UI | Static site on S3 + CloudFront, or embed API in existing website |

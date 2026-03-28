@@ -347,7 +347,7 @@ def create_pipeline(session: PipelineSession | None = None) -> Pipeline:
                 input_mode="File",
             ),
         },
-        depends_on=[step_embed, step_synthesize],
+        depends_on=[step_synthesize],
     )
 
     ###########################################################################

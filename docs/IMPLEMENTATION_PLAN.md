@@ -161,7 +161,7 @@ Provisions **3 S3 buckets** (vectors bucket removed — replaced by pgvector on 
 
 #### `infra/terraform/lambda.tf` [UPDATE]
 - Add `vpc_config` block: private subnets + Lambda security group
-- Update env vars: replace `SAGEMAKER_ENDPOINT_NAME` with `DB_SECRET_ARN`, `BEDROCK_HAIKU_MODEL_ID`
+- Update env vars: replace `SAGEMAKER_ENDPOINT_NAME` with `DB_SECRET_ARN`, `BEDROCK_QWEN3_MODEL_ID`
 - Increase timeout to 60s (pgvector retrieval + Bedrock generation)
 - Add `depends_on` for VPC endpoints (Lambda must not start before endpoints are ready)
 
@@ -333,14 +333,14 @@ S3 Bronze (raw)
 ### Sub-phase 4a: Inference Logic
 
 #### `serving/inference.py` [REWRITE]
-- **No longer a SageMaker endpoint entry point** — now a standalone RAG module called directly by Lambda
-- RAG flow:
+- **Benchmarking SageMaker endpoint entry point** — not part of the production serving path
+- Fine-tuned Qwen2.5-3B model loaded via `model_fn()` (4-bit NF4 on GPU, bfloat16 on CPU)
+- RAG flow in `predict_fn()`:
   1. Embed query using Bedrock Titan Embed v2 (1024-dim)
-  2. Query pgvector via `SELECT ... ORDER BY embedding <=> %s LIMIT 5` (cosine similarity)
+  2. Query pgvector via `SELECT chunk_text, source_document FROM embeddings ORDER BY embedding <=> %s::vector LIMIT 5`
   3. Build prompt with retrieved chunks as context
-  4. Call Bedrock Qwen3 Next 80B A3B (`qwen.qwen3-next-80b-a3b`) for generation
-- RDS connection pooled at module level (reused across Lambda invocations)
-- Credentials fetched from Secrets Manager once at cold start; cached in module scope
+  4. Generate answer with the fine-tuned Qwen2.5-3B via HuggingFace `pipeline("text-generation")`
+- Credentials fetched from Secrets Manager per request (no persistent connection at module level)
 
 #### `serving/deploy_endpoint.py` [BENCHMARKING ONLY]
 - **Not part of the live serving path**
@@ -352,17 +352,18 @@ S3 Bronze (raw)
 #### `serving/lambda/handler.py` [UPDATE]
 - Python 3.12 Lambda function; runs inside VPC (private subnets)
 - API Gateway → Lambda → pgvector retrieval + Bedrock Qwen3 generation
-- **New request/response contract** (designed for future multi-turn, no breaking changes needed later):
+- **Request/response contract:**
   ```json
   // Request
-  { "query": "Who created Nagraj?", "session_id": "abc123", "history": [] }
+  { "query": "Who created Nagraj?" }
   // Response
-  { "answer": "Nagraj was created by...", "language": "en", "session_id": "abc123" }
+  { "answer": "Nagraj was created by...", "language": "en", "sources": ["raj_comics_1990.txt"] }
   ```
-- Input validation via pydantic v2 (`QueryRequest` model)
-- Language detection: Devanagari chars (`[\u0900-\u097F]`) → `language: "hi"`
-- Remove 503 cold start logic (no SageMaker endpoint in hot path)
-- `history` accepted but not yet used — reserved for future multi-turn conversation memory
+- Language detection: Devanagari chars (`[\u0900-\u097F]`) → `language: "hi"`; otherwise `"en"`
+- No-chunks fallback: returns 200 with fallback message and `sources: []`
+- Sources deduplicated: `sorted({c["source_document"] for c in chunks})`
+- Module-level `bedrock` and `sm_client` Boto3 clients (reused across warm invocations)
+- Removed 503 cold start logic (no SageMaker endpoint in hot path)
 
 #### `serving/lambda/requirements.txt` [UPDATE]
 - Add: `psycopg2-binary`, `pgvector`

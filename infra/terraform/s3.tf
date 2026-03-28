@@ -35,10 +35,6 @@ locals {
 
 resource "aws_s3_bucket" "bronze" {
   bucket = local.bucket_names.bronze
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_s3_bucket_versioning" "bronze" {
@@ -93,10 +89,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
 
 resource "aws_s3_bucket" "silver" {
   bucket = local.bucket_names.silver
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_s3_bucket_versioning" "silver" {
@@ -150,10 +142,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "silver" {
 
 resource "aws_s3_bucket" "gold" {
   bucket = local.bucket_names.gold
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_s3_bucket_versioning" "gold" {

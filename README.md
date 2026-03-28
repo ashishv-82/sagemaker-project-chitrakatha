@@ -90,7 +90,7 @@ flowchart LR
 | **Fine-tuning** | QLoRA (PEFT + TRL) on SageMaker | Efficient 4-bit tuning using **RAFT** on ml.g4dn.xlarge (on-demand) |
 | **Chatbot Serving** | Bedrock Qwen3 Next 80B A3B + pgvector RAG | No GPU cold start; pay per token; strong Hindi; works in ap-southeast-2 |
 | **Benchmarking** | SageMaker Real-time Endpoint (on-demand) | Fine-tuned Qwen2.5-3B deployed on-demand to compare quality vs Qwen3 RAG |
-| **Bridge** | AWS Lambda (in VPC) + API Gateway | Lightweight HTTP interface; session_id + history contract ready for multi-turn |
+| **Bridge** | AWS Lambda (in VPC) + API Gateway | Lightweight HTTP interface; language-aware (`en`/`hi`); returns `answer`, `sources`, `language` |
 | **Networking** | Private VPC + VPC Endpoints (Bedrock + Secrets Manager) | No NAT Gateway; RDS in private subnet; Lambda reaches Bedrock via VPC endpoint |
 | **IaC** | Terraform | Fully reproducible; outputs drive all runtime config |
 | **CI/CD** | GitHub Actions | Lint, test, plan, ECR image build, and pipeline trigger |
@@ -156,7 +156,7 @@ sagemaker-project-chitrakatha/
 │   ├── requirements.txt             # Exact-pinned training dependencies
 │   └── steps/                       # Individual pipeline step scripts
 ├── serving/
-│   ├── inference.py                 # pgvector retrieval + Bedrock Qwen3 generation
+│   ├── inference.py                 # Benchmarking SageMaker endpoint entry point (fine-tuned Qwen2.5-3B)
 │   ├── deploy_endpoint.py           # On-demand benchmarking endpoint deploy
 │   └── lambda/handler.py            # API Gateway bridge (language-aware, VPC)
 ├── data/scripts/                    # Data ingestion & synthesis utilities
@@ -190,17 +190,17 @@ See [`docs/ARCHITECTURAL_DECISIONS.md`](docs/ARCHITECTURAL_DECISIONS.md) for all
 | Phase 4 | Serving (original FAISS + Qwen endpoint) | ✅ Complete |
 | Phase 5 | Observability & lineage | ✅ Complete |
 | Phase 6 | CI/CD (GitHub Actions) | ✅ Complete |
-| **Phase 7** | **Architecture migration: pgvector + Bedrock Qwen3 Next 80B A3B** | 🔄 In Progress |
+| **Phase 7** | **Architecture migration: pgvector + Bedrock Qwen3 Next 80B A3B** | ✅ Complete |
 
 ### Phase 7 — Migration Checklist
 
-- [ ] Terraform: RDS PostgreSQL + pgvector + private VPC (Option B)
-- [ ] Pipeline Flow A: replace FAISS writer with pgvector writer
-- [ ] Serving: rewrite `inference.py` (pgvector retrieval + Bedrock Qwen3 Next 80B A3B)
-- [ ] Serving: update Lambda `handler.py` (new contract + VPC config)
-- [ ] Fine-tuning: add `pipeline/Dockerfile` (custom ECR training image)
-- [ ] Fine-tuning: update `pipeline.py` for S3 model cache (`SM_CHANNEL_MODEL`)
-- [ ] Cleanup: remove S3 Vectors bucket, `faiss_index.tf`, `faiss_writer.py`, `deploy_endpoint.py` from live path
+- [x] Terraform: RDS PostgreSQL + pgvector + private VPC (Option B)
+- [x] Pipeline Flow A: replace FAISS writer with pgvector writer
+- [x] Serving: rewrite `inference.py` (benchmarking SageMaker endpoint — Qwen2.5-3B + pgvector)
+- [x] Serving: update Lambda `handler.py` (Titan Embed v2 → pgvector → Qwen3; VPC config)
+- [ ] Fine-tuning: add `pipeline/Dockerfile` (custom ECR training image) — deferred
+- [x] Fine-tuning: update `pipeline.py` for S3 model cache (`SM_CHANNEL_MODEL`)
+- [x] Cleanup: remove S3 Vectors bucket, `faiss_index.tf`, `faiss_writer.py`, `deploy_endpoint.py` from live path
 
 ---
 
